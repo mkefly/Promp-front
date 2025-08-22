@@ -1,0 +1,51 @@
+stages:
+  - test
+  - build
+  - pages
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+
+test:unit:
+  stage: test
+  image: node:20
+  script:
+    - npm ci
+    - npm run test
+
+test:e2e:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.47.0-jammy
+  script:
+    - npm ci
+    - npx playwright install --with-deps
+    - npm run e2e
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+build:
+  stage: build
+  image: node:20
+  script:
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+pages:
+  stage: pages
+  image: node:20
+  script:
+    - npm ci
+    - npm run build
+    - mkdir -p public
+    - cp -r dist/* public/
+  artifacts:
+    paths:
+      - public
+  only:
+    - main

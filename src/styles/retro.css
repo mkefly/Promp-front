@@ -1,0 +1,215 @@
+:root{
+  --accent: #00ff66;
+  --accent-dim: #33cc88;
+  --panel: rgba(0,18,0,.82);
+  --radius: 12px;
+
+  /* matrix extras */
+  --grid-glow: color-mix(in oklab, var(--accent) 30%, transparent);
+  --border-strong: color-mix(in oklab, var(--accent) 50%, black);
+  --border-soft: color-mix(in oklab, var(--accent) 25%, black);
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+/* Use a tighter, technical mono look. If you can, import Fira Code / IBM Plex Mono in index.html head */
+body {
+  background: radial-gradient(1200px 700px at 50% -20%, rgba(0,40,0,.35), transparent 60%), #000;
+  color: var(--accent);
+  font-family: "Fira Code", "IBM Plex Mono", "Doto", "Courier New", monospace;
+  line-height: 1.6;
+  font-size: 16px;
+}
+
+/* Subtle scanlines */
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(0,255,102,0.05) 3px, rgba(0,255,102,0.05) 3px);
+  opacity: .22; mix-blend-mode: overlay; pointer-events: none;
+}
+
+/* matrix shimmer overlay (super subtle) */
+body::before {
+  content: '';
+  position: fixed; inset: -10%;
+  background:
+    radial-gradient(2000px 1200px at 50% 120%, rgba(0,100,50,.05), transparent 60%),
+    repeating-linear-gradient(180deg, transparent 0 12px, rgba(0,255,140,.03) 12px 13px);
+  animation: shimmer 12s linear infinite;
+  pointer-events: none;
+}
+@keyframes shimmer {
+  0% { transform: translateY(0); opacity: .25; }
+  50% { opacity: .35; }
+  100% { transform: translateY(8px); opacity: .25; }
+}
+
+.glow { text-shadow: 0 0 8px var(--grid-glow); }
+.dim { color: var(--accent-dim); }
+.k {
+  background: rgba(0,0,0,.45);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 0 .35rem;
+}
+
+.shell { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+.header, .footer {
+  width: min(1100px, 92vw); margin: 0 auto;
+  padding: .6rem 0; display: flex; align-items: center; justify-content: space-between;
+}
+.footer { font-size: .85rem; color: var(--accent-dim); }
+
+.console {
+  width: min(1100px, 92vw); margin: 0 auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 32px rgba(0,0,0,.45), 0 0 32px rgba(0,0,0,.55);
+  background: linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.78));
+  min-height: 60vh;
+  display: grid; grid-template-rows: 1fr auto;
+}
+
+/* Styled scrollbars */
+.log {
+  padding: 1.4rem 1.1rem 10.5rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-dim) transparent;
+}
+.log::-webkit-scrollbar { width: 10px; }
+.log::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); border-radius: 6px; }
+.log::-webkit-scrollbar-thumb {
+  background-color: var(--accent-dim);
+  border-radius: 6px; border: 2px solid rgba(0,0,0,0.3);
+  box-shadow: inset 0 0 6px rgba(0,255,102,.2);
+}
+.log::-webkit-scrollbar-thumb:hover { background-color: var(--accent); }
+
+.line { white-space: pre-wrap; padding: .12rem 0; }
+
+/* Prompt bar: left ($ + input) and right (status + buttons) */
+.prompt-bar {
+  position: sticky; bottom: 0; margin: 0 1rem 1rem;
+  display: flex; align-items: center; gap: .8rem;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: .7rem .9rem;
+}
+.prompt-bar > .left { display: flex; align-items: center; flex: 1; gap: .6rem; }
+.prompt-bar > .right { display: flex; align-items: center; gap: .6rem; }
+
+.prompt-input {
+  background: transparent; border: none; outline: none; color: var(--accent);
+  font-size: 1.08rem; caret-color: var(--accent);
+  flex: 1; padding: .2rem .1rem;
+}
+.prompt-input::placeholder { color: color-mix(in oklab, var(--accent) 55%, black); opacity: .55; }
+
+.btn, .btn-agent, .select-flat, .card {
+  border: 1px solid var(--border-soft);
+  background: rgba(0, 24, 0, .55);
+  padding: .45rem .7rem;
+  border-radius: 8px;
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.btn:hover, .btn-agent:hover, .select-flat:hover, .card:hover {
+  background: rgba(0, 50, 0, .55);
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px rgba(0,255,120,.08) inset;
+}
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+
+/* Header agent button smaller / compact */
+.btn-agent { padding: .3rem .55rem; font-size: .85rem; }
+
+.copy-icon {
+  position: absolute; top: 0.35rem; right: 0.35rem;
+  display: inline-flex; align-items: center; gap: .25rem;
+  border: 1px dashed var(--border-soft);
+  padding: .12rem .4rem; border-radius: 6px; font-size: .78rem;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.copy-icon:hover { background: rgba(0,255,102,.12); }
+
+/* Markdown polish */
+.markdown { color: var(--accent); }
+.markdown h1, .markdown h2, .markdown h3 { margin: .68rem 0 .42rem; }
+.markdown p { margin: .42rem 0; }
+.markdown code {
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0 .3rem;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 255, 102, 0.18);
+}
+.markdown pre {
+  position: relative;
+  background: rgba(0, 20, 0, 0.58);
+  padding: .78rem .95rem;
+  border-radius: 8px;
+  overflow: auto;
+  border-left: 2px solid color-mix(in oklab, var(--accent) 42%, black);
+  box-shadow: inset 0 0 8px rgba(0, 255, 102, 0.12);
+  margin: .58rem 0;
+}
+
+.markdown table {
+  border-collapse: collapse; width: 100%; margin: .58rem 0;
+  box-shadow: inset 0 0 8px rgba(0,255,102,.06);
+}
+.markdown th, .markdown td {
+  border: 1px solid var(--border-soft);
+  padding: .48rem .56rem;
+}
+.markdown th {
+  background: rgba(0, 34, 0, .5);
+  font-weight: 600;
+}
+
+/* Modal card style reuse */
+.card {
+  background: rgba(0,0,0,.35);
+}
+
+/* Flattened, “non-bubbly” select */
+.select-flat {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%), linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  background-position: calc(100% - 14px) calc(50% - 3px), calc(100% - 8px) calc(50% - 3px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+  font-size: .85rem;
+  color: var(--accent);
+}
+
+/* Preview panel positioning unchanged */
+.preview {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + .6rem);
+  background: rgba(0,0,0,.9);
+  border: 1px dashed var(--border-soft);
+  border-radius: 10px; padding: .75rem .9rem; max-height: 260px; overflow: auto;
+  width: 100%;
+}
+
+@media (min-width: 1100px) {
+  body { font-size: 18px; }
+  .prompt-input { font-size: 1.15rem; }
+}
+
+
+.btn-agent {
+  padding: .28rem .55rem;
+  font-size: .85rem;
+  background: linear-gradient(180deg, rgba(0,24,0,.6), rgba(0,20,0,.5));
+  border: 1px solid var(--border-soft);
+}
+.btn-agent:hover {
+  border-color: var(--border-strong);
+  background: linear-gradient(180deg, rgba(0,40,0,.6), rgba(0,24,0,.55));
+}
