@@ -15,7 +15,7 @@ export function PromptComposer({
   onApply: (text: string) => void;
 }){
   const [text, setText] = useState(initial);
-  const [tab, setTab] = useState<'edit'|'preview'|'templates'>('edit');
+  const [tab, setTab] = useState<'edit'|'templates'>('edit');
 
   const stats = useMemo(() => {
     const chars = text.length;
@@ -26,14 +26,13 @@ export function PromptComposer({
   }, [text]);
 
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-2">
       <div className="flex items-center gap-2 text-xs">
         <div className="k">chars: {stats.chars}</div>
         <div className="k">words: {stats.words}</div>
         <div className="k">~tokens: {stats.tokens}</div>
         <div className="ml-auto flex gap-2">
           <button className={`btn ${tab==='edit'?'glow':''}`} onClick={()=>setTab('edit')}>edit</button>
-          <button className={`btn ${tab==='preview'?'glow':''}`} onClick={()=>setTab('preview')}>preview</button>
           <button className={`btn ${tab==='templates'?'glow':''}`} onClick={()=>setTab('templates')}>templates</button>
         </div>
       </div>
@@ -46,12 +45,6 @@ export function PromptComposer({
           onChange={e=>setText(e.target.value)}
           placeholder="Write your full prompt…"
         />
-      )}
-
-      {tab === 'preview' && (
-        <div className="markdown p-3 rounded border border-[color-mix(in_oklab,var(--accent)_35%,black)] bg-[rgba(0,0,0,.6)]">
-          <MarkdownRenderer text={text || '*No content*'} />
-        </div>
       )}
 
       {tab === 'templates' && (

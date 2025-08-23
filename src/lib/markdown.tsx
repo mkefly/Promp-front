@@ -5,7 +5,37 @@ import rehypeSanitize from 'rehype-sanitize';
 
 export const looksLikeMarkdown = (s: string) => /[#_*`>|-]|\|.*\|/.test(s);
 
-async function copy(text: string){ try { await navigator.clipboard.writeText(text); } catch {} }
+async function copy(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {}
+}
+
+const extractText = (node: any): string => {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (typeof node === 'object' && 'props' in node && node.props?.children)
+    return extractText(node.props.children);
+  return '';
+};
+
+function PreWithCopy(props: any) {
+  const { children, ...rest } = props;
+  const plain = extractText(children);
+  return (
+    <pre className="relative" {...rest}>
+      <button
+        className="copy-icon"
+        onClick={() => copy(plain)}
+        title="copy code"
+      >
+        copy
+      </button>
+      {children}
+    </pre>
+  );
+}
 
 export function MarkdownRenderer({ text }: { text: string }) {
   return (
@@ -14,31 +44,27 @@ export function MarkdownRenderer({ text }: { text: string }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
-          // NOTE: don't destructure in the param list; TS types are too generic.
+          // Inline code only — do NOT wrap in <pre> here.
           code: (props: any) => {
             const { inline, children, ...rest } = props as any;
-            const txt = String(children ?? '');
             if (inline) return <code {...rest}>{children}</code>;
-            return (
-              <pre className="relative">
-                <button className="copy-icon" onClick={() => copy(txt)} title="copy code">copy</button>
-                <code {...rest}>{children}</code>
-              </pre>
-            );
+            // For block code, let the <pre> renderer handle the wrapper & copy button
+            return <code {...rest}>{children}</code>;
           },
+          pre: (props: any) => <PreWithCopy {...props} />, // one copy button per block
+
           table: (props: any) => {
             const { children, ...rest } = props;
-            const extractText = (node: any): string => {
-              if (!node) return '';
-              if (typeof node === 'string') return node;
-              if (Array.isArray(node)) return node.map(extractText).join('');
-              if (typeof node === 'object' && node.props?.children) return extractText(node.props.children);
-              return '';
-            };
             const plain = extractText(children);
             return (
               <div className="relative">
-                <button className="copy-icon" onClick={() => copy(plain)} title="copy table">copy</button>
+                <button
+                  className="copy-icon"
+                  onClick={() => copy(plain)}
+                  title="copy table"
+                >
+                  copy
+                </button>
                 <table {...rest}>{children}</table>
               </div>
             );

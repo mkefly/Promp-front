@@ -5,7 +5,6 @@ export function ThemeSwitcher(){
   const { theme, setThemeId, allThemes } = useTheme();
   return (
     <label className="text-xs dim flex items-center gap-2">
-      <span className="k">theme</span>
       <select
         className="select-flat"
         value={theme.id}

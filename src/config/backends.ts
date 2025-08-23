@@ -8,7 +8,6 @@ const BackendSchema = z.object({
   accent: z.string().min(1),
   desc: z.string(),
   badges: z.array(z.string()),
-  latency: z.number().nonnegative(),
   requiresAuth: z.enum(['none','apiKey','sso']).optional(),
   demo: z.boolean().optional(),
 });
@@ -20,6 +19,8 @@ const RAW: Backend[] = [
   { id: 'bravo', name: 'bravo-rag', url: 'https://api.bravo/v1', accent: '#00ffd0', desc: 'Retrieval-augmented with enterprise KB.', badges: ['RAG','citations','fast'], latency: 95, requiresAuth: 'sso' },
   { id: 'charlie', name: 'charlie-code', url: 'https://api.charlie/v1', accent: '#e6ff00', desc: 'Coding-focused with unit test hints.', badges: ['code','tests','perf'], latency: 140, demo: true, requiresAuth: 'apiKey' },
   { id: 'delta', name: 'delta-vision', url: 'https://api.delta/v1', accent: '#72ff9e', desc: 'Vision model for screenshots & docs.', badges: ['vision','ocr','layout'], latency: 160, requiresAuth: 'sso' },
+  { id: 'adelta', name: 'delta-vision', url: 'https://api.delta/v1', accent: '#72ff9e', desc: 'Vision model for screenshots & docs.', badges: ['vision','ocr','layout'], latency: 160, requiresAuth: 'sso' },
+  { id: 'ade4lta', name: 'delta-vision', url: 'https://api.delta/v1', accent: '#72ff9e', desc: 'Vision model for screenshots & docs.', badges: ['vision','ocr','layout'], latency: 160, requiresAuth: 'sso' },
 ];
 
 export const BACKENDS: Backend[] = (() => {

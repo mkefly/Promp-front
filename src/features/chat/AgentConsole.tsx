@@ -141,7 +141,7 @@ export default function AgentConsole() {
         <div className="flex items-center gap-2 text-xs">
           <ThemeSwitcher />
           <AuthControls />
-          <button className="btn-agent dim" onClick={() => setShowSelector(true)}>agent: [{active.name}] </button>
+          <button className="btn" onClick={() => setShowSelector(true)}>agent: [{active.name}] </button>
         </div>
       </header>
 
