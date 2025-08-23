@@ -1,5 +1,10 @@
 @import './styles/retro.css';
 
+/* must be the first line in the file, before @tailwind/base etc. */
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&display=swap');
+
+/* then your @tailwind lines and the rest of your CSS */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

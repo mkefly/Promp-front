@@ -185,6 +185,9 @@ export default function AgentConsole() {
             >
               expand
             </button>
+            <button className="btn" onClick={() => runStream.cancel()} disabled={!streaming}>
+            stop
+          </button>
           </div>
 
           {showPreview && input && (

@@ -2,16 +2,32 @@ import type { Backend } from '@/types';
 import { pickDemo, streamTextDemo } from '@/lib/streamer';
 import { AppConfig } from '@/config/app.config';
 import { useAuth } from '@/services/auth';
+import { useRef } from 'react'; // ⬅️ NEW
 
 export type StreamCallbacks = {
   onToken: (t: string) => void;
   onError?: (e: any) => void;
 };
 
-export async function streamDemo(cb: StreamCallbacks){
+export async function streamDemo(cb: StreamCallbacks, signal?: AbortSignal){ // ⬅️ signal (optional)
   const demo = pickDemo();
-  await streamTextDemo(demo.text, cb.onToken);
-  return { isMarkdown: demo.md };
+  // Make demo cancellable without changing streamTextDemo’s API
+  const run = (async () => {
+    await streamTextDemo(demo.text, cb.onToken);
+    return { isMarkdown: demo.md };
+  })();
+
+  if (!signal) return await run;
+
+  if (signal.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+  const aborted = new Promise<never>((_, reject) =>
+    signal.addEventListener('abort', () =>
+      reject(new DOMException('Aborted', 'AbortError')), { once: true }
+    )
+  );
+  return await Promise.race([run, aborted]);
 }
 
 function isSse(res: Response){
@@ -86,7 +102,13 @@ async function streamNdjsonOrText(res: Response, cb: StreamCallbacks){
   }
 }
 
-async function streamLiveInternal(backend: Backend, prompt: string, headers: Record<string,string>, cb: StreamCallbacks){
+async function streamLiveInternal(
+  backend: Backend,
+  prompt: string,
+  headers: Record<string,string>,
+  cb: StreamCallbacks,
+  signal?: AbortSignal // ⬅️ NEW
+){
   try {
     const res = await fetch(`${backend.url}/chat`, {
       method: 'POST',
@@ -95,6 +117,7 @@ async function streamLiveInternal(backend: Backend, prompt: string, headers: Rec
         ...headers,
       },
       body: JSON.stringify({ prompt }),
+      signal, // ⬅️ pass abort signal to fetch
     });
 
     if (!res.ok || !res.body) {
@@ -109,19 +132,42 @@ async function streamLiveInternal(backend: Backend, prompt: string, headers: Rec
       await streamNdjsonOrText(res, cb);
     }
     return { isMarkdown: true };
-  } catch (e) {
-    cb.onError?.(e);
+  } catch (e: any) {
+    // Graceful cancel messaging
+    if (e?.name === 'AbortError') {
+      cb.onError?.('Stream stopped.');
+    } else {
+      cb.onError?.(e);
+    }
     return { isMarkdown: false };
   }
 }
 
 export function useChatStreamer(){
   const auth = useAuth();
-  return async function run(backend: Backend, prompt: string, cb: StreamCallbacks){
-    if (AppConfig.mode === 'demo' || backend.demo) {
-      return await streamDemo(cb);
+  const controllerRef = useRef<AbortController | null>(null); // ⬅️ NEW
+
+  const run = async function(backend: Backend, prompt: string, cb: StreamCallbacks){
+    // Abort any previous in-flight stream (optional behavior)
+    if (controllerRef.current) {
+      controllerRef.current.abort();
     }
-    const headers = await auth.getHeadersForBackend(backend);
-    return await streamLiveInternal(backend, prompt, headers, cb);
-  };
+    const ctrl = new AbortController();
+    controllerRef.current = ctrl;
+
+    try {
+      if (AppConfig.mode === 'demo' || backend.demo) {
+        return await streamDemo(cb, ctrl.signal); // ⬅️ cancellable demo
+      }
+      const headers = await auth.getHeadersForBackend(backend);
+      return await streamLiveInternal(backend, prompt, headers, cb, ctrl.signal);
+    } finally {
+      controllerRef.current = null;
+    }
+  } as (backend: Backend, prompt: string, cb: StreamCallbacks) => Promise<{ isMarkdown: boolean }>;
+
+  // Attach a cancel method without changing your existing call site
+  (run as any).cancel = () => controllerRef.current?.abort();
+
+  return run as typeof run & { cancel: () => void };
 }
