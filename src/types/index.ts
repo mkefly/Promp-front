@@ -10,7 +10,6 @@ export type Backend = {
   accent: string;
   desc: string;
   badges: string[];
-  latency: number;
   requiresAuth?: AuthKind;
   demo?: boolean;
 };

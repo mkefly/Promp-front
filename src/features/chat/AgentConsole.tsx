@@ -240,7 +240,6 @@ export default function AgentConsole() {
                   <div className="glow font-semibold" style={{ color: b.accent }}>
                     {b.name}
                   </div>
-                  <div className="text-xs dim">~{b.latency}ms</div>
                 </div>
                 <div className="text-xs dim mb-1">{b.url}</div>
                 <div className="text-sm mb-1">{b.desc}</div>
