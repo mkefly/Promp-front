@@ -1,0 +1,247 @@
+Here’s a tight, one-sprint plan for two developers. Single epic, few stories, clear split, and copy-pasteable pseudocode. No database, just Durable Functions doing the waiting + polling, and GitLab getting the final callback.
+
+⸻
+
+Epic: Long-running vendor job via Azure Durable Functions (no DB)
+
+Architecture (simple + minimal)
+
+flowchart LR
+  subgraph GitLab[GitLab CI/CD]
+    A1[Starter job\ncurl /Start]
+    A2[Receives callback\nstatus on commit/pipeline]
+  end
+
+  subgraph Funcs[Azure Functions (Durable)]
+    direction TB
+    HTTP[HTTP Starter /Start]
+    ORCH[(Orchestrator)]
+    KICK[Activity: kickoff\nPOST /vendor/start]
+    POLL[Activity: check_status\nGET /vendor/status/{jobId}]
+    GLAB[Activity: notify_gitlab]
+  end
+
+  subgraph Platform[Azure platform]
+    STORE[(Azure Storage)\n(Durable state)]
+    KV[(Key Vault)\n(secrets)]
+    AI[(App Insights)\nlogs]
+  end
+
+  A1 --> HTTP --> ORCH
+  ORCH --> KICK --> ORCH
+  ORCH -->|durable timer| POLL --> ORCH
+  ORCH --> GLAB --> A2
+  ORCH -.state/history.-> STORE
+  Funcs -.MI.-> KV
+  Funcs --> AI
+
+How waiting works: the orchestrator sets a durable timer, which persists state to Storage and unloads. No compute while sleeping. When the timer fires, the instance is rehydrated and continues.
+
+How status is exposed: after each poll the orchestrator calls set_custom_status({...}). That JSON shows up in the built-in statusQueryGetUri.
+
+How refresh time is set: the loop delay is controlled by env vars (POLL_INITIAL_SECONDS, POLL_MAX_SECONDS, POLL_BACKOFF_FACTOR) and may be overridden by a vendor Retry-After header.
+
+⸻
+
+Pseudocode (copy & adapt)
+
+HTTP Starter
+
+# Start/__init__.py
+async def main(req, starter):
+    import azure.durable_functions as df
+    client = df.DurableOrchestrationClient(starter)
+    b = req.get_json()
+    instance_id = b.get("instanceId") or f"{b['pipelineId']}-{b['jobId']}"
+    corr = req.headers.get("x-correlation-id") or instance_id
+
+    input_payload = {
+        "payload": b.get("payload"),
+        "gitlab": {
+            "pipelineId": b["pipelineId"], "projectId": b["projectId"],
+            "jobId": b["jobId"], "commit": b.get("commit"), "branch": b.get("branch")
+        },
+        "correlationId": corr
+    }
+    await client.start_new("Orchestrator", instance_id=instance_id, client_input=input_payload)
+    return client.create_check_status_response(req, instance_id)
+
+Orchestrator
+
+# Orchestrator/__init__.py
+import os
+from datetime import timedelta
+import azure.durable_functions as df
+
+def orchestrator(ctx: df.DurableOrchestrationContext):
+    cfg = {
+      "initial":  int(os.getenv("POLL_INITIAL_SECONDS", "15")),
+      "max":      int(os.getenv("POLL_MAX_SECONDS", "300")),
+      "factor":   float(os.getenv("POLL_BACKOFF_FACTOR", "1.7")),
+      "maxHours": float(os.getenv("MAX_RUNTIME_HOURS", "6"))
+    }
+    inp = ctx.get_input() or {}
+    corr = inp["correlationId"]
+
+    job = yield ctx.call_activity("kickoff", {"payload": inp["payload"], "corr": corr})
+    job_id = job["jobId"]
+    ctx.set_custom_status({"phase":"started","jobId":job_id,"corr":corr})
+
+    delay = cfg["initial"]
+    deadline = ctx.current_utc_datetime + timedelta(hours=cfg["maxHours"])
+
+    while ctx.current_utc_datetime < deadline:
+        yield ctx.create_timer(ctx.current_utc_datetime + timedelta(seconds=delay))
+        res = yield ctx.call_activity("check_status", {"jobId": job_id, "corr": corr})
+        phase = res["phase"]                        # running | succeeded | failed
+        vendor = res.get("vendorState")
+        retry_after = res.get("retryAfterSec")      # optional
+
+        ctx.set_custom_status({"phase":phase,"vendorState":vendor,
+                               "jobId":job_id,"lastPollAt":ctx.current_utc_datetime.isoformat()})
+
+        if phase == "succeeded":
+            yield ctx.call_activity("notify_gitlab", {"status":"success","jobId":job_id,"gitlab":inp["gitlab"],"corr":corr})
+            return {"status":"success","jobId":job_id}
+        if phase == "failed":
+            yield ctx.call_activity("notify_gitlab", {"status":"failed","jobId":job_id,"gitlab":inp["gitlab"],"corr":corr})
+            return {"status":"failed","jobId":job_id}
+
+        delay = min(cfg["max"], retry_after or int(delay * cfg["factor"]))
+
+    ctx.set_custom_status({"phase":"timeout","jobId":job_id})
+    yield ctx.call_activity("notify_gitlab", {"status":"timeout","jobId":job_id,"gitlab":inp["gitlab"],"corr":corr})
+    return {"status":"timeout","jobId":job_id}
+
+main = df.Orchestrator.create(orchestrator)
+
+Activities (shapes)
+
+# Activities/kickoff/__init__.py
+def main(arg: dict) -> dict:
+    # POST vendor /start with auth headers (ApiKey or AAD)
+    # return {"jobId": "<vendor id>"}
+    ...
+
+# Activities/check_status/__init__.py
+def main(arg: dict) -> dict:
+    # GET vendor /status/{jobId}
+    # map vendor state -> running|succeeded|failed
+    mapping = {"queued":"running","processing":"running","running":"running",
+               "done":"succeeded","succeeded":"succeeded","failed":"failed","error":"failed"}
+    r = http.get(f".../status/{arg['jobId']}", headers={"x-correlation-id": arg["corr"]})
+    j = r.json()
+    retry = int(r.headers.get("Retry-After", "0") or 0)
+    return {"phase": mapping.get(j.get("state","").lower(),"running"),
+            "vendorState": j.get("state"), "retryAfterSec": (retry or None)}
+
+# Activities/notify_gitlab/__init__.py
+def main(arg: dict) -> None:
+    state = {"success":"success","failed":"failed","timeout":"failed"}[arg["status"]]
+    http.post(f"https://gitlab.com/api/v4/projects/{arg['gitlab']['projectId']}/statuses/{arg['gitlab']['commit']}",
+              headers={"PRIVATE-TOKEN": token_from_kv(), "x-correlation-id": arg["corr"]},
+              data={"state": state, "name": f"external:{arg['jobId']}"})
+
+Config knobs (env)
+	•	POLL_INITIAL_SECONDS, POLL_MAX_SECONDS, POLL_BACKOFF_FACTOR, MAX_RUNTIME_HOURS
+	•	EXT_API_BASE, AUTH_MODE (apikey/aad), secret or scope in Key Vault
+	•	GITLAB_PROJECT_ID (if you prefer not to pass it), GitLab token in Key Vault
+
+⸻
+
+Single-Sprint Plan (2 devs, parallelizable)
+
+Story 1 — Bootstrap & Infra (shared)
+
+Goal: Function App skeleton + local run + env plumbing.
+AC:
+	•	Function App with Durable extension enabled.
+	•	Start HTTP function returns management URLs (includes statusQueryGetUri).
+	•	App settings wired; Managed Identity enabled; Key Vault reachable.
+
+Tasks:
+	•	Create repo, base Function project, host.json/extensions.
+	•	Provision Storage/Function/KV in one resource group.
+	•	Add minimal README/runbook.
+
+⸻
+
+Story 2 — Orchestrator (Dev A)
+
+Goal: Deterministic workflow with durable wait & backoff; sets customStatus.
+AC:
+	•	Kickoff → poll loop → final states: success/failed/timeout.
+	•	customStatus shows phase, jobId, vendorState, lastPollAt.
+	•	Poll cadence controlled by env vars; respects optional Retry-After.
+
+Tasks:
+	•	Implement orchestrator (as above).
+	•	Add parameterizable backoff & timeout.
+	•	Unit tests for delay progression and timeout path (mock activities).
+
+⸻
+
+Story 3 — Vendor activities (Dev A)
+
+Goal: kickoff and check_status using a minimal auth wrapper.
+AC:
+	•	kickoff returns jobId from vendor.
+	•	check_status maps vendor states → normalized phases; surfaces Retry-After.
+	•	Correlation ID header set on all requests.
+
+Tasks:
+	•	Write tiny auth helper (ApiKey or AAD MI).
+	•	Implement both activities and mapping table.
+	•	Happy-path + transient error retry tests (mock HTTP).
+
+⸻
+
+Story 4 — GitLab integration (Dev B)
+
+Goal: Final status pushed to GitLab commit/pipeline.
+AC:
+	•	notify_gitlab updates status idempotently.
+	•	Token sourced from Key Vault; no secrets in app settings.
+
+Tasks:
+	•	Implement activity and KV retrieval.
+	•	Add simple error handling + logging.
+	•	Smoke test against a test project.
+
+⸻
+
+Story 5 — Starter + Wiring + E2E (Dev B)
+
+Goal: Start from GitLab, see progress via status URL, and receive final status in GitLab.
+AC:
+	•	GitLab job triggers POST /Start with payload; receives 202 and management URLs.
+	•	curl $statusQueryGetUri shows evolving customStatus.
+	•	On completion, GitLab commit/pipeline shows success/failure.
+
+Tasks:
+	•	Finish HTTP starter (instanceId strategy, correlation ID).
+	•	Provide GitLab CI snippet for the starter job.
+	•	E2E run with a stub vendor (or real sandbox), capture logs.
+
+⸻
+
+Split of work (clear ownership)
+	•	Dev A: Orchestrator + Vendor activities (Stories 2–3).
+Focus: durable timers, backoff, mapping, HTTP wrapper.
+	•	Dev B: Starter endpoint + GitLab notify + E2E (Stories 4–5).
+Focus: request/response contracts, KV access, GitLab API, runbook.
+
+Shared (Day 1): Story 1 bootstrap + env.
+Shared (Final day): E2E tests, logging polish, docs.
+
+⸻
+
+Definition of Done (for the epic)
+	•	One repo with Functions code; func start runs locally.
+	•	POST /Start returns management URLs; status endpoint shows customStatus during polls.
+	•	Orchestrator honors polling knobs and times out per config.
+	•	GitLab reflects final status from notify_gitlab.
+	•	No plaintext secrets; Key Vault used via Managed Identity.
+	•	README: how to start, env vars, sample curl, GitLab YAML snippet.
+
+That’s the whole slice—lightweight, split cleanly for two people, and comfortably achievable in one sprint.
