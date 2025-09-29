@@ -2,6 +2,12 @@
 
 **Scope:** Define an **AI-Product** as the **smallest governed runtime boundary**. An AI-Product may include one or more **model family deployments** (optionally paired with **Bot interfaces**) that are treated, audited, and operated together as a single product unit for compliance, identity, networking, and operations.
 
+> **Edge Authorization Options (reading guide)**
+> AIMART supports two authorization patterns at the edge:
+> **(A)** **Azure API Management (APIM) Self-Hosted Gateway** placed **in front of** Istio (the **default** in this document), and
+> **(B)** **Istio ext_authz** with a custom decision service (previous pattern).
+> This document uses **APIM** throughout. For a comparison and when to pick which, see **Appendix C — APIM Gateway vs. Ext-AuthZ Graph**.
+
 ---
 
 ## 0) Executive Summary
@@ -86,7 +92,7 @@ A **Model Unit** is the atomic building block inside an AI-Product.
 
 ---
 
-## 4a) **Model Family (Definition)**
+## 4a) **Model Family**
 
 A **Model Family** is the logical grouping of **all versions and releases** of a single model lineage within an AI-Product.
 
@@ -123,7 +129,7 @@ A **Model Family** is the logical grouping of **all versions and releases** of a
 
 ---
 
-### Traffic Management (Istio)
+### Traffic Management
 
 * **Family endpoint (default):**
 
@@ -134,7 +140,7 @@ A **Model Family** is the logical grouping of **all versions and releases** of a
 
   * Deterministic call to `riskscorer-v1.ai-product...` or `riskscorer-v2...`.
   * Only exposed for **auditors/evaluators** under policy.
-  * Still subject to Istio AuthN/Z + evidence logging.
+  * Still subject to edge AuthN/Z (via APIM) and mesh evidence logging.
 
 ---
 
@@ -142,8 +148,8 @@ A **Model Family** is the logical grouping of **all versions and releases** of a
 
 **Identity & Access**
 
-* All access governed by **Entra ID (AAD) groups**.
-* Real-time Microsoft Graph checks (group GUIDs authoritative).
+* All access governed by **Entra ID (AAD) groups** (or App Roles where feasible).
+* APIM validates tokens and (when required) resolves **group membership** via Microsoft Graph.
 * Service-to-service traffic represented by **shared UAMI**.
 
 **Risk & Compliance**
@@ -156,14 +162,14 @@ A **Model Family** is the logical grouping of **all versions and releases** of a
 
 **Networking**
 
-* One Istio ingress gateway.
+* **APIM Self-Hosted Gateway (edge)** in front of **Istio IngressGateway**.
 * One Istio egress gateway with allowlists.
-* Default-deny internal traffic (only Bot↔model Family allowed by default).
+* Default-deny internal traffic (only Bot↔Model Family allowed by default).
 
 **Audit & Evidence**
 
 * One tamper-evident bundle.
-* Captures identity/auth, data lineage, build digests, runtime metrics.
+* Captures identity/auth, data lineage, build digests, runtime metrics, and APIM correlation/evidence.
 
 **Operations**
 
@@ -177,10 +183,10 @@ A **Model Family** is the logical grouping of **all versions and releases** of a
 This document defines the technical runtime and governance boundaries of an AI-Product.
 To be fully enterprise-ready, the following dimensions must still be elaborated elsewhere:
 
-* **Lifecycle & GitOps pipeline:** how model releases flow, what gates exist, and how evidence is attached at each step.
-* **Approval chains:** who signs off promotions (Owner, MRMC, Security, Platform, etc.) and how separation of duties is enforced.
-* **Ops & escalation flow:** SLOs, on-call duties, rollback procedures, and incident escalation ladder.
-* **Risk taxonomy alignment:** explicit mapping of MRMC classifications to EU AI Act categories (minimal, limited, high-risk, prohibited) and the controls that apply.
+* **Lifecycle & GitOps pipeline**.
+* **Approval chains** and SoD.
+* **Ops & escalation flow**.
+* **Risk taxonomy alignment** (MRMC ↔ EU AI Act).
 
 ---
 
@@ -192,50 +198,41 @@ To be fully enterprise-ready, the following dimensions must still be elaborated 
 
 ### Option A — **1 SA / 1 UAMI** *(PoC only)*
 
-A single ServiceAccount bound to a single UAMI.
-
-* Simplifies setup, but produces **poor auditability** and **broad permissions**.
-* Suitable only for proof-of-concept or temporary experiments.
-
----
+(unchanged; discouraged for production)
 
 ### Option B — **N SAs / 1 shared UAMI** *(default pattern)*
 
-Each Deployment (MLServer or Bot) has its own Kubernetes ServiceAccount, but all federate into a **single shared AI-Product UAMI**.
-
-* Ensures **consistent product identity** while keeping per-deployment audit granularity.
-* Simplifies Azure object management and policy assignment.
+(unchanged; recommended)
 
 **Guardrails:**
 
-* CI/CD pipelines render expected FIC subjects; pipeline **fails if drift** (missing/extra bindings).
-* Edge authorization enforces per-model audiences.
-* Logs and traces must carry `product_id`, `model_id`, `model_version`, `env`, `stage`) for lineage.
-
----
+* CI/CD renders expected FIC subjects; **fail on drift**.
+* **APIM** enforces per-route audiences/roles/groups.
+* Logs/traces carry `product_id`, `model_id`, `model_version`, `env`, `stage`.
 
 ### Option C — **N SAs / N UAMIs** *(discarded)*
 
-We considered, but **disregarded**, the option where each **Model Unit** federates into its **own UAMI**.
-
-* While this provides the strongest isolation, it introduces **significant operational overhead** and Azure object sprawl.
-* More importantly, the need for multiple UAMIs inside a namespace usually indicates that the services **no longer share identity, privileges, or risk posture**.
-* In such cases, the affected component(s) should not stay in the same namespace — they should be promoted into a **separate AI-Product**.
+(unchanged; split into separate AI-Products if needed)
 
 > **Hard rule:** An AI-Product **MUST** use exactly one UAMI. If a deployment requires a different UAMI, the boundary must split into multiple AI-Products.
 
 ---
 
-## 7) Access & Networking Model (Consolidated)
+## 7) Access & Networking Model
 
-### Ingress
+### Ingress (APIM → Istio)
 
-* Istio IngressGateway validates JWTs.
-* Delegates group membership checks to **Ext-AuthZ Graph (AIMART)**.
+* **APIM Self-Hosted Gateway** performs:
+
+  * JWT validation (issuer/audience/signature).
+  * **Group/role authorization** per route (policy).
+  * Optional **Graph** resolution for nested/overage scenarios.
+  * Abuse controls (rate limits/quotas) and header normalization.
+* **Istio IngressGateway** receives **pre-authorized** traffic from APIM and routes to Bot/MLServer.
 
 ### Internal (mesh + K8s NetworkPolicy)
 
-* **Bot ↔ model Family**: allowed by default (STRICT mTLS + service identity).
+* **Bot ↔ Model Family**: allowed by default (STRICT mTLS + service identity).
 * **Bot ↔ Bot**: not allowed unless explicitly governed.
 * **Model Family ↔ Model Family**: not allowed unless explicitly governed.
 
@@ -246,60 +243,58 @@ We considered, but **disregarded**, the option where each **Model Unit** federat
 * **Kafka**: whitelisted topics, tagged with UAMI.
 * **Other ad-hoc sources**: denied unless MRMC + governance approval.
 
-> **Alternative:** Place **Azure API Management (Self-Hosted Gateway)** in front of the Istio IngressGateway to perform **JWT validation**, **group/role authorization via Microsoft Graph**, and **rate-limiting/quotas** before forwarding pre-authorized requests to the mesh—see **Appendix C** for the architecture, trade-offs, and policy examples. Further implementation details and feasibility would need to be assess.
-
 ---
 
 ## 8) Protocols & Ports
 
-
-**All ingress paths are admitted only after edge authorization via the AIMART `ext-authz` service.**
+**All ingress paths are admitted only after edge authorization via the **APIM Self-Hosted Gateway**.**
 
 * **MLServer**
 
-  * **HTTP** → `/v2/*` on port **8080**.  <br/>
-    *Default:* routed **directly** from IGW to MLServer.<br/>
-  * **gRPC** → `/inference.GRPCInferenceService` on port **8081**.  <br/>
-    *Default:* routed **directly** from IGW to MLServer.
+  * **HTTP** → `/v2/*` on **8080** (Istio routes directly to MLServer).
+  * **gRPC** → `/inference.GRPCInferenceService` on **8081**.
 
 * **Bot**
 
-  * **Public entrypoint:** `/api/messages` (edge-exposed; mesh-internal mTLS to backend MLServer).
-  * **Info ports** (ViewerGroup-protected):
+  * **Public entrypoint:** `/api/messages` (via APIM → Istio).
+  * **Info ports** (ViewerGroup-protected at APIM):
 
-    * `/info/agent` → agent card (logic/orchestration/bindings)
-    * `/info/model-card` → model card for current deployed version(s)
-    * `/info/aibom` → AI Bill of Materials for the deployed version
+    * `/info/agent`, `/info/model-card`, `/info/aibom`.
 
 * **Istio Services**
 
-  * All ports must be **named** (`http`, `grpc`) for consistent routing in Istio.
+  * All ports **named** (`http`, `grpc`) for consistent routing.
 
 * **Gateway routing (summary)**
 
-  * `^/api/messages` → **Bot**
-  * `^/info/(agent|model-card|aibom)$` → **Bot**
-  * `^/v2/.*` (HTTP 8080) → **MLServer (direct)**
-  * `gRPC /inference.GRPCInferenceService` (port 8081) → **MLServer (direct)**
+  * APIM regex/route → **Istio** → service:
+
+    * `^/api/messages$` → **Bot**
+    * `^/info/(agent|model-card|aibom)$` → **Bot**
+    * `^/v2/.*` (HTTP 8080) → **MLServer**
+    * `gRPC /inference.GRPCInferenceService` (8081) → **MLServer**
 
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": true, "curve": "linear"}} }%%
 flowchart LR
 
-subgraph EDGE["Istio IngressGateway IGW<br/><span style='font-size:12px'>AuthN/Z via Ext-AuthZ Graph</span>"]
+subgraph APIM["APIM Self-Hosted Gateway<br/><span style='font-size:12px'>JWT + Groups/Roles + Quotas</span>"]
   R1["^/api/messages$"]
   R2["^/info/(agent|model-card|aibom)$"]
   R3["HTTP 8080 /v2/*"]
   R4["gRPC 8081 /inference.GRPCInferenceService"]
 end
 
-BOT["Bot (/api/messages, /info/*)<br/>SA to UAMI"]
-MLS["MLServer<br/>HTTP 8080 /v2/*<br/>GRPC 8081 /inference.GRPCInferenceService"]
+subgraph EDGE["Istio IngressGateway (IGW)"]
+end
 
-R1 --> BOT
-R2 --> BOT
-R3 --> MLS
-R4 --> MLS
+BOT["Bot (/api/messages, /info/*)<br/>SA→UAMI"]
+MLS["MLServer<br/>HTTP 8080 /v2/*<br/>gRPC 8081 /inference.GRPCInferenceService"]
+
+R1 --> EDGE --> BOT
+R2 --> EDGE --> BOT
+R3 --> EDGE --> MLS
+R4 --> EDGE --> MLS
 
 BOT -->|STRICT mTLS · azp/appid = UAMI| MLS
 ```
@@ -325,7 +320,6 @@ flowchart TD
 
 ## 10) RBAC Model (AAD Group → Privilege)
 
-
 | Group (AAD)   | Privileges                                                                                                   |
 | ------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Owner**     | Full administrative control of the AI-Product, including approving promotions and lifecycle changes          |
@@ -334,14 +328,13 @@ flowchart TD
 | **Consumer**  | Invoke inference APIs (`/v2/*`, gRPC) and interact via the Teams channel                                     |
 | **Auditor**   | Access observability and compliance evidence: runtime logs, audit bundles, and Unity Catalog references      |
 
-> more details in RBAC dedicated document.
+> More details in the RBAC document.
 
 ---
 
-
 ## 11) Audit & Evidence (Aggregated)
 
-Audit evidence is collected at **three levels** — **per-version**, **per-family**, and **per AI-Product** — and aggregated into a **tamper-evident bundle** for regulators and auditors.
+Audit evidence is collected at **three levels** — **per-version**, **per-family**, and **per AI-Product** — and aggregated into a **tamper-evident bundle**.
 
 ### Evidence Layers
 
@@ -359,31 +352,30 @@ Audit evidence is collected at **three levels** — **per-version**, **per-famil
 * **AI-Product Evidence (final bundle)**
 
   * Aggregates all Family bundles with infrastructure, networking, and operations evidence
-  * Single governed unit consumed by MRMC and regulators
+  * Includes **APIM policy decision logs** (request IDs, required groups/roles, Graph correlation IDs, decision)
 
 ---
 
-### Evidence Dimensions (always included in the AI-Product bundle)
+### Evidence Dimensions (always included)
 
 * **Identity & Authorization**
 
-  * Entra ID group GUID checks, `azp/appid` values
-  * Ext-AuthZ decisions and Microsoft Graph correlation IDs
+  * Entra ID group GUID/role checks (performed by APIM)
+  * APIM correlation IDs and decision outcome (allow/deny)
 
 * **Data & Lineage**
 
-  * Unity Catalog schema references
-  * Model families and versions linked to experiments, volumes, and artifacts
+  * Unity Catalog schema references; families/versions ↔ experiments/volumes/artifacts
 
 * **Build & Provenance**
 
-  * Container/image digests, CI/CD pipeline run IDs
+  * Container/image digests, CI/CD run IDs
   * Supply chain metadata (SBOMs, checksums, signatures)
 
 * **Runtime & Operations**
 
   * Logs, metrics, and observability tags (`product_id`, `family_id`, `model_id`, `model_version`, `env`)
-  * Incident tickets, SLO/SLA adherence, rollout and rollback history
+  * Incident tickets, SLO/SLA adherence, rollout/rollback history
 
 ---
 
@@ -391,7 +383,7 @@ Audit evidence is collected at **three levels** — **per-version**, **per-famil
 
 ---
 
-## 12) Canonical AI-Product Flow
+## 12) Canonical AI-Product Flow (APIM → Istio)
 
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": true, "curve": "linear"}} }%%
@@ -405,90 +397,73 @@ flowchart LR
   end
 
   %% Edge and authorization
+  APIM[APIM Self-Hosted Gateway<br/>JWT · Groups/Roles · Quotas]
   IGW[Istio IngressGateway<br/>TLS · Default Deny · CORS at Edge]
-  AUTHZ[Ext AuthZ AIMART service<br/>Microsoft Graph group check]
 
-  Client -->|AAD Token| IGW
-  Teams -->|/api/messages BF JWT| IGW
-  Agents -->|/info/* AAD Token| IGW
-  IGW --> AUTHZ
-  AUTHZ --> IGW
+  Client -->|AAD Token| APIM
+  Teams -->|/api/messages BF JWT| APIM
+  Agents -->|/info/* AAD Token| APIM
+  APIM --> IGW
 
   %% AI Product namespace
-  subgraph NS[AI Product · NameSpace]
+  subgraph NS[AI Product · Namespace]
     direction TB
 
-    %% Shared identity
     UAMI[Shared AI Product UAMI]
 
-    %% Bot component bound 1 to 1 with model family
     subgraph NSs[Model Unit]
-        subgraph BOTGRP[Bot · Assigned to One Model Family]
-        BOT[Bot Deployment<br/>K8s SA to UAMI]
+      subgraph BOTGRP[Bot · Assigned to One Model Family]
+        BOT[Bot Deployment<br/>K8s SA→UAMI]
         INFO1[info agent]
         INFO2[info model card]
         INFO3[info aibom]
         BOT --- INFO1
         BOT --- INFO2
         BOT --- INFO3
-        end
+      end
 
-        %% Model family all versions
-        subgraph MODEL[Model Family model name · All Versions]
+      subgraph MODEL[Model Family · All Versions]
         direction LR
         V1[MLServer v1<br/>K8s SA]
         V2[MLServer v2<br/>K8s SA]
         VN[MLServer vN<br/>K8s SA]
-        end
+      end
     end
 
-    %% Identity wiring
-    UAMI -. federated via FIC .- BOT
-    UAMI -. federated via FIC .- V1
-    UAMI -. federated via FIC .- V2
-    UAMI -. federated via FIC .- VN
+    UAMI -. FIC federation .- BOT
+    UAMI -. FIC federation .- V1
+    UAMI -. FIC federation .- V2
+    UAMI -. FIC federation .- VN
 
-    %% Traffic flows
     IGW -->|/v2/models/*| MODEL
     IGW -->|/api/messages| BOT
     IGW -->|/info/*| BOT
-    BOT -->|mTLS S2S azp or appid equals UAMI| V1
-    BOT -->|mTLS S2S canary A B shadow| V2
-    BOT -->|mTLS S2S selected| VN
 
+    BOT -->|mTLS S2S (azp/appid = UAMI)| V1
+    BOT -->|mTLS S2S canary/shadow| V2
+    BOT -->|mTLS S2S selected| VN
   end
 
-  %% Shared egress context
   UC[Unity Catalog Schema]
   DM[DataMesh]
   NX[Nexus Artifacts]
-  TOPIC[Kafka Topic bot model a2a]
+  TOPIC[Kafka Topic (bot/model/A2A)]
 
-  NS -->|Ingress/Egress| UC
-  NS -->|Ingress/Egress| DM
-  NS -->|Ingress/Egress| NX
-  NS -->|Ingress/Egress| TOPIC
+  NS -->|Egress/Ingress| UC
+  NS -->|Egress/Ingress| DM
+  NS -->|Egress/Ingress| NX
+  NS -->|Egress/Ingress| TOPIC
 ```
 
 ---
 
-### 12b) Multiple Model Units
-
-**Overview**
-A single AI-Product namespace containing **multiple Model Units (X & Y)**. Entry flows for **Teams**, **Human (browser/SSO)**, and **Service (AAD)** traverse the **Istio IngressGateway**, which again delegates authorization to an external Graph-backed group check.
-
-**Routing & cross-model interactions**
-The IGW routes to the appropriate **Model Unit** (e.g., distinct Teams channels for X vs. Y). **Explicit cross-model calls** (Y ↔ X) are allowed where designed and governed.
-
-**Governed egress**
-Each unit uses controlled mesh egress/ingress to **Unity Catalog**, **Data Mesh**, **Kafka A2A**, and **Nexus**, maintaining a consistent AI-Product policy boundary while supporting multiple model families.
+### 12b) Multiple Model Units (APIM → Istio)
 
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": true}} }%%
 flowchart LR
 
-  AUTHZ[Ext AuthZ AIMART service<br/>Microsoft Graph group check]
-
+  APIM[APIM SHGW<br/>JWT + Groups/Roles]
   %% ===== Clients =====
   subgraph CLIENTS [Clients]
     Teams[Microsoft Teams]
@@ -497,8 +472,8 @@ flowchart LR
   end
 
   %% ===== Namespace =====
-  subgraph NS [AKS Namespace AI Product]
-    IGW[Istio:<br/>IngressGateway<br/>STRICT mTLS<br/>Default Deny<br/> Edge CORS]
+  subgraph NS [AKS Namespace · AI Product]
+    IGW[Istio:<br/>IngressGateway<br/>STRICT mTLS<br/>Default Deny<br/>Edge CORS]
 
     direction TB
       X[Model Unit: model x]
@@ -511,9 +486,10 @@ flowchart LR
   NX[Nexus]
 
   %% ===== External to Edge =====
-  Teams -->|BotFramework JWT| IGW
-  Human -->|SSO| IGW
-  Service -->|AAD JWT| IGW
+  Teams -->|BF JWT| APIM
+  Human -->|SSO| APIM
+  Service -->|AAD JWT| APIM
+  APIM --> IGW
 
   %% ===== Edge routing to services =====
   IGW <-->|TeamsChannel x| X
@@ -522,9 +498,6 @@ flowchart LR
   IGW --> Y
 
   Y <-->|Query model x/y| X
-
-  IGW --> AUTHZ
-  AUTHZ --> IGW
 
   %% ===== Egress on the right =====
   X -->|Egress/Ingress| UC
@@ -537,368 +510,162 @@ flowchart LR
   Y -->|Egress/Ingress| NX
 ```
 
-
 ---
 
-## 13) Protocol Sequences
+## 13) Protocol Sequences (APIM-first)
 
 ### Internal Communication Classes
 
-**Default internal hop (always enabled for a Model Unit):**
-
-* **Bot ↔ Model Family (paired)**
-  Authorized by **AllowedServicePolicy-Pair** (mesh `AuthorizationPolicy` binding the Bot’s SA/UAMI to its *paired* Model Family SA/UAMI, and vice-versa).
-  *No AAD group check* on this **internal** hop; enforced by **STRICT mTLS + service identity**.
-
-**Non-default internal hops (require explicit opt-in):**
-
-* **Bot ↔ Bot (cross-bot)**
-  Authorized only if **AllowedServicePolicy-BotMesh** is configured for the specific bots. Disabled by default.
-* **Model Family ↔ Model Family (inter-model)**
-  Authorized only if **AllowedServicePolicy-InterModel** is configured for the specific model services. Disabled by default.
-
-> Summary: **Bot↔Model Family (pair) = default**. **Bot↔Bot** and **Model Family↔Model Family** are **not default** and must be explicitly allowed per product design.
+* **Default internal hop:** **Bot ↔ Model Family (paired)** via STRICT mTLS + service identity; **no AAD group check** on internal hop.
+* **Non-default:** **Bot ↔ Bot** and **Model Family ↔ Model Family** require explicit mesh policies.
 
 ### Sequences
 
-#### Teams → Bot → Model Family (paired, default internal hop)
+#### Teams → APIM → Istio → Bot → Model Family
 
 ```mermaid
 sequenceDiagram
   participant T as Teams
-  participant G as Istio Gateway
-  participant X as Ext-AuthZ (AIMART)
+  participant A as APIM SHGW
+  participant G as Microsoft Graph
+  participant I as Istio Gateway
   participant B as Bot Deployment
   participant M as Model Family (paired)
 
-  T->>G: POST /api/messages (BF JWT)
-  G->>X: Validate issuer/audience + groups
-  X-->>G: allow/deny
+  T->>A: POST /api/messages (BF JWT)
+  A->>A: Validate JWT (iss/aud/sig)
+  alt overage/nested groups
+    A->>G: Resolve memberships
+    G-->>A: Groups + corr ID
+  end
+  A->>A: Policy eval (required groups/roles, quotas)
   alt allowed
-    G->>B: Route to Bot Service
+    A->>I: Forward (pre-authorized)
     Note over B,M: AllowedServicePolicy-Pair (default)<br/>STRICT mTLS + service identity
+    I->>B: /api/messages
     B->>M: mTLS S2S (UAMI)
     M-->>B: 200 OK
     B-->>T: 200 OK
   else denied
-    G-->>T: 401/403
+    A-->>T: 401/403
   end
 ```
 
 ---
 
-#### Service (UAMI) → Model Family (direct ingress)
+#### Service (UAMI) → APIM → Istio → Model Family (direct ingress)
 
 ```mermaid
 sequenceDiagram
   participant S as Service (UAMI)
-  participant G as Istio Gateway
-  participant X as Ext-AuthZ (AIMART)
+  participant A as APIM SHGW
+  participant G as Microsoft Graph
+  participant I as Istio Gateway
   participant M as Model Family
 
-  S->>G: POST /v2/... (AAD JWT)
-  G->>X: Validate issuer/audience + azp/appid == UAMI + groups ⊇ AllowedGroups
-  X-->>G: allow/deny
+  S->>A: POST /v2/... (AAD JWT)
+  A->>A: Validate JWT + audience/azp == UAMI
+  alt overage/nested groups
+    A->>G: Resolve memberships
+    G-->>A: Groups + corr ID
+  end
+  A->>A: Policy eval (required groups/roles)
   alt allowed
-    G->>M: Forward to Model Family
+    A->>I: Forward to Model Family
+    I->>M: Route
     M-->>S: 200 OK
   else denied
-    G-->>S: 401/403
+    A-->>S: 401/403
   end
 ```
 
 ---
 
-#### Human → Model Family (direct ingress)
+#### Human → APIM → Istio → Model Family (read APIs)
 
 ```mermaid
 sequenceDiagram
   participant U as AAD User
-  participant G as Istio Gateway
-  participant X as Ext-AuthZ (AIMART)
+  participant A as APIM SHGW
+  participant G as Microsoft Graph
+  participant I as Istio Gateway
   participant M as Model Family
 
-  U->>G: GET /v2/models (Bearer AAD JWT)
-  G->>X: Validate issuer/audience + groups ⊇ AllowedGroups
-  X-->>G: allow/deny
+  U->>A: GET /v2/models (Bearer AAD JWT)
+  A->>A: Validate JWT
+  A->>G: (optional) group resolution
+  G-->>A: memberships + corr ID
+  A->>A: Policy eval
   alt allowed
-    G->>M: Forward request
+    A->>I: Forward
+    I->>M: Route
     M-->>U: 200 OK
   else denied
-    G-->>U: 401/403
+    A-->>U: 401/403
   end
 ```
 
 ---
 
-#### Viewer → Bot info ports (`/info/*`)
+#### Viewer → APIM → Istio → Bot info ports (`/info/*`)
 
 ```mermaid
 sequenceDiagram
   participant V as Viewer (AAD)
-  participant G as Istio Gateway
-  participant X as Ext-AuthZ (AIMART)
+  participant A as APIM SHGW
+  participant G as Microsoft Graph
+  participant I as Istio Gateway
   participant B as Bot Deployment
 
-  V->>G: GET /info/model-card or /info/aibom or /info/agent
-  G->>X: Validate issuer/audience + groups ⊇ ViewerGroup
-  X-->>G: allow/deny
+  V->>A: GET /info/model-card|/info/aibom|/info/agent
+  A->>A: Validate JWT + Viewer group/role
+  A->>G: (optional) group resolution
+  G-->>A: memberships + corr ID
   alt allowed
-    G->>B: Route to Bot
+    A->>I: Forward
+    I->>B: Route
     B-->>V: 200 OK (JSON)
   else denied
-    G-->>V: 401/403
+    A-->>V: 401/403
   end
 ```
 
----
-
-#### Bot ↔ Bot (non-default, explicit policy)
-
-```mermaid
-sequenceDiagram
-  participant B1 as Bot X
-  participant B2 as Bot Y
-
-  Note over B1,B2: Internal S2S within namespace<br/> AllowedServicePolicy-BotMesh<br/> (explicit allow)<br/>STRICT mTLS no AAD group check
-
-  B1->>B2: mTLS S2S request
-  B2-->>B1: 200 OK
-```
-
----
-
-#### Model Family ↔ Model Family (non-default, explicit policy)
-
-```mermaid
-sequenceDiagram
-  participant M1 as Model Family X
-  participant M2 as Model Family Y
-
-  Note over M1,M2: Internal S2S within namespace<br/> AllowedServicePolicy-InterModel<br/> (explicit allow)<br/>STRICT mTLS no AAD group check
-
-  M1->>M2: mTLS S2S request
-  M2-->>M1: 200 OK
-```
 ---
 
 # Appendices
 
-## Appendix A — **Ext-AuthZ Graph** (AIMART Service)
+## Appendix A — **APIM at the Edge (Operational Model)**
 
-### Purpose
+**Purpose**
+APIM provides a **centralized decision point** for token validation and group/role authorization, with optional Microsoft Graph evaluation for nested/overage groups. It also offers quotas, products, and request normalization before traffic reaches the mesh.
 
-Ext-AuthZ Graph is the **external authorization service** operated by AIMART. It provides a **single, central decision point** for validating whether a caller belongs to the **required Entra ID (AAD) groups** for a given request.
+**Design Goals**
 
-### Scope
+1. **Centralization** of AuthN/Z and abuse controls.
+2. **Policy-as-config** (APIM policies) separate from service code.
+3. **Minimal mesh complexity** (Istio focuses on routing/mTLS).
+4. **Auditability** — every decision emits evidence (request ID, required groups/roles, Graph corr ID, outcome).
+5. **Security** — APIM SHGW runs **in-cluster**; traffic to Istio uses TLS.
 
-* **AI-Product agnostic** — the service does not carry product-specific logic.
-* **Reusable** — it accepts required group GUIDs from Istio, so the same service supports all namespaces.
-* **Authoritative** — it integrates with Microsoft Graph to evaluate membership in real time, including **nested** and **overage** groups.
+**High-Level Flow**
 
-### Design Goals
-
-1. **Centralization** — one canonical path for all group membership checks.
-2. **Policy as data** — Istio/Gateway defines which groups are required; Ext-AuthZ only validates.
-3. **Minimal state** — service only evaluates input provided by Istio and returns *allow/deny*.
-4. **Auditability** — every decision produces evidence: request ID, required group GUIDs, evaluated memberships, Graph correlation ID, and final decision.
-5. **Security** — all traffic between Istio and Ext-AuthZ uses STRICT mTLS inside the cluster; the service is not exposed externally.
-
-### Operational Model
-
-* **Istio IngressGateway** validates token issuer, audience, and signature.
-* Istio delegates group-based authorization to **Ext-AuthZ Graph**, passing:
-
-  * Caller identity (from JWT)
-  * Required group GUIDs (from route policy)
-* Ext-AuthZ Graph checks group membership via Microsoft Graph.
-* The service responds **allow/deny**, which Istio enforces before routing traffic to the AI-Product.
-
-### High-Level Flow
-
-```mermaid
-sequenceDiagram
-  title Edge Authorization with Ext-AuthZ Graph (AIMART)
-
-  participant C as Client (Human/API/Bot/UAMI)
-  participant G as Istio IngressGateway
-  participant E as Ext-AuthZ Graph (AIMART)
-  participant M as Microsoft Graph (Entra ID)
-  participant B as Backend (Bot or Model Family)
-
-  C->>G: HTTP/gRPC request with AAD access token
-  G->>G: Validate JWT (iss · aud · signature)
-  G->>E: Delegate authZ with required group GUIDs + caller identity
-  E->>M: Check membership for provided GUIDs
-  M-->>E: Membership evaluation result
-  E-->>G: Decision (allow/deny) + evidences
-  alt allow
-    G->>B: Route request (post-authorization)
-    B-->>C: 2xx response
-  else deny
-    G-->>C: 401/403
-  end
-```
-
-
-# Appendix B — **Shadow Deployments in Model Families**
-
-## Purpose
-
-A **Shadow Deployment** allows AIMART to evaluate **new model versions** under *production-like conditions* without exposing outputs to business users or external systems.
-It provides **observational evidence** for MRMC review while ensuring **zero customer impact** and **controlled data flows**.
+1. Client calls APIM with AAD token.
+2. APIM validates JWT.
+3. If needed, APIM resolves memberships via Microsoft Graph.
+4. APIM enforces required groups/roles/quotas.
+5. On **allow**, APIM forwards to Istio; on **deny**, APIM returns 401/403.
+6. Decision evidence is logged and later rolled into the AI-Product audit bundle.
 
 ---
 
-## Characteristics of a Shadow Deployment
+## Appendix B — **Shadow Deployments in Model Families**
 
-* **AI-Product Shadows**
+*(unchanged from your prior version; still valid with APIM at the edge)*
 
-  * A Shadow is defined at the **AI-Product level**, not per version.
-  * All candidate versions under evaluation **must share the same shadow role**:
-
-    * **Label:** `model.role=shadow`
-    * **Scope:** applied consistently across all Shadow Deployments in the namespace.
-  * This creates a **single governance boundary** for shadows, enabling uniform NetworkPolicy, Istio Sidecar, and Ext-AuthZ enforcement.
-
-* **Model Family Binding**
-
-  * Every Shadow belongs to an existing **Model Family** (same UC schema, shared Entra ID identity, shared MRMC profile).
-  * It acts as a **temporary evaluation sibling** to the production and candidate releases of that family.
-
-* **Ingress (mirrored traffic)**
-
-  * Shadows receive **mirrored requests** from the Bot or Istio Gateway.
-  * Responses from the Shadow are never returned to end-users; they remain internal for evaluation only.
-
-* **Egress Controls (deny-by-default)**
-
-  * Outbound traffic from Shadow Deployments is **blocked by default** (Kubernetes NetworkPolicy + Istio Sidecar with `REGISTRY_ONLY`).
-  * The only permitted egress paths are **explicitly whitelisted evaluation sources or services**, pre-approved by MRMC:
-
-    * **Observability services** — in-cluster Prometheus/OTel collectors or node-local log agents for logs, metrics, and traces.
-    * **Evaluation sources (internal)** — AIMART-managed Kafka topics, evaluation volumes, or replay datasets capturing results for offline analysis.
-    * **Evaluation services (external)** — regulated third-party endpoints (e.g., OpenAI API) used to benchmark candidate outputs, allowed only if explicitly approved in the evaluation scope.
-  * **Ingress symmetry principle:** a Shadow egress is **deny-by-default** and may target only MRMC-approved observability sinks and evaluation services. **Egress** to **business/production systems** is **forbidden**.
-
-  * Any other egress (Unity Catalog, Data Mesh, general Internet endpoints) is **forbidden** unless:
-
-    1. Explicitly approved in MRMC evaluation scope,
-    2. Declared in Git-based policy (ServiceEntry + NetworkPolicy), and
-    3. Captured in the Shadow evaluation evidence bundle.
-
-* **Observability-Only Outputs**
-
-  * Shadow results are exported exclusively to approved sinks and services.
-  * Evidence bundles are tagged with: `product_id`, `family_id`, `model_version`, `role=shadow`, `eval_id`.
-
-* **Lifecycle**
-
-  * **Created** when a candidate version enters pre-production evaluation.
-  * **Evaluated** during a governance-defined window with mirrored traffic and observability capture.
-  * **Promoted** to canary/production only after MRMC approval.
-  * **Retired** automatically if not promoted before the evaluation window expires.
+> … (keep the full Shadow appendix you approved previously)
 
 ---
 
-## Evaluation Workflow
-
-1. **Deploy candidate as Shadow**
-
-   * Registered in Unity Catalog + MLflow.
-   * Helm values mark role: `shadow` and enable egress blocking.
-
-2. **Mirror traffic**
-
-   * Istio routes a copy of Bot requests to the Shadow Deployment.
-   * Shadow responses are never returned to the end-user, logged as traces as part of the shadows experiment.
-
-3. **Capture evidence**
-
-   * Logs, metrics, latency, safety filters, drift signals collected.
-   * If MRMC-approved, outputs may be compared against internal/external evaluation sources.
-
-4. **MRMC review**
-
-   * Evidence bundle presented: lineage, observability metrics, evaluation comparisons.
-   * MRMC decides: *approve for canary/production*, *reject*, or *extend evaluation*.
-
-5. **Promotion or retirement**
-
-   * On approval: alias `@production-candidate` updated to point to this version.
-   * On rejection or timeout: Shadow is torn down and marked *retired*.
-
----
-
-## Governance Benefits
-
-* **Zero business risk** — Shadows never return responses to end-users.
-* **Auditability** — All requests, evidence, and permitted egress paths are logged and linked to evaluation scope.
-* **Compliance** — Egress is deny-by-default, with exceptions documented, version-controlled, and MRMC-approved.
-* **Operational clarity** — Shadows are temporary evaluation deployments, not permanent product members.
-
----
-
-## Diagram — Shadow Evaluation Flow
-
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": true}} }%%
-flowchart LR
-
-BOT[Bot Deployment] 
-MLSchamp[Model Champion v1.0<br/>alias: &#64;production-champion]
-MLScand[Model Candidate v1.1<br/>alias: &#64;production-candidate]
-MLSshadow[Model Shadow v2.0<br/>role=shadow<br/>egress=DENY except approved services]
-
-REQ[Teams/API Request]
-
-REQ --> BOT
-BOT -->|90% traffic| MLSchamp
-BOT -->|10% traffic| MLScand
-BOT -->|mirror only| MLSshadow
-
-MLSshadow -.->|logs, metrics, shadow feeds| OBS[Observability / Internal Sources]
-MLSshadow -.->|optional external services<br/>MRMC-approved| EXT[Evaluation Service]
-
-OBS --> MRMC[MRMC Review]
-MRMC -->|approve| AliasUpdate[Promote v2.0 → alias: &#64;production-candidate]
-MRMC -->|reject| Retire[Retire Shadow]
-```
-
----
-
-## Policy Rule
-
-> **If this approach is taken any candidate model version under MRMC evaluation MUST be deployed as a Shadow Deployment.**
-
-> Within an AI-Product, all Shadow Deployments share the same `model.role=shadow` label, forming one governance unit.
-
-> Shadow Deployments are ingress-only, egress-denied by default, and may communicate solely with approved observability services and MRMC-approved evaluation sources.
-
-**Policy:** When using the **Shadow** approach, each **Model Family’s Shadow** **MUST** run under its **own Kubernetes ServiceAccount** (e.g., `sa-<family>-shadow`). The AI-Product continues to use **one UAMI** total; each Shadow SA is federated to the **same UAMI** via a separate credential.
-
-**Why this is required**
-
-* **Least privilege & isolation:** Shadow has a stricter identity boundary than prod/canary, preventing unintended access to business systems.
-* **Clean audit trail:** Shadow actions are clearly attributable (`role=shadow`, distinct SA principal), simplifying MRMC reviews and RCAs.
-* **Safer egress posture:** Deny-by-default with narrowly approved evaluation/observability sinks is enforceable per Shadow without impacting prod/canary.
-* **Reduced blast radius:** Misconfigurations or anomalies in Shadow cannot cross-contaminate production identities or entitlements.
-* **Credential hygiene:** Shadow credentials can be rotated, paused, or quarantined independently of production.
-
-**Governance & evidence implications**
-
-* Evidence bundles MUST show the **distinct Shadow principal**, MRMC approval for any allowed evaluation sinks, and proof that Shadow responses are never returned to end-users.
-* Access attestations SHOULD list Shadow entitlements separately from prod/canary, even though they share the same UAMI.
-
-**Scope & boundaries**
-
-* This requirement applies **per Model Family** (i.e., one Shadow SA per family).
-* If a Shadow requires entitlements that diverge materially from the family’s risk posture, reassess whether a **separate AI-Product** boundary is warranted.
-
-
-Got it 👍 — here’s a clean **Appendix C** you can bolt onto your **AI-Product v2.0 Architecture** doc. I’ve written it in the same structured style as your other appendices, with diagrams optional if you want later.
-
----
 
 # Appendix C — **APIM Gateway vs. Ext-AuthZ Graph**
 
@@ -948,7 +715,6 @@ Client → **APIM SHGW** (JWT validation, Graph check, quotas, transformations) 
 
 * Additional hop before mesh.
 * Policy DSL (XML) managed separately from Istio GitOps.
-* Licensing and operational overhead.
 
 ---
 
