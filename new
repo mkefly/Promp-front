@@ -1,20 +1,19 @@
-# **AI-Product v2.0 Architecture**
+# **AI-Product API Architecture — Evaluation & Serving (API-Only, No Hot Reload)**
 
-**Scope:** Define an **AI-Product** as the **smallest governed runtime boundary**. An AI-Product may include one or more **model family deployments** (optionally paired with **Bot interfaces**) that are treated, audited, and operated together as a single product unit for compliance, identity, networking, and operations.
+**Scope:** Define the **AI-Product API** as the **only runtime workload** of an AI-Product. All models exist **only** as **Unity Catalog/MLflow registrations** (families, versions, aliases). The API **resolves and materializes** models **once at startup** (no hot reload) under a **strict stage policy**. Each AI-Product has **two namespaces** — **Evaluation** and **Serving** — each with **one UAMI** and clearly separated ingress/egress, evidence, and MRMC promotion.
 
 > **Edge Authorization Options (reading guide)**
-> AIMART supports two authorization patterns at the edge:
-> **(A)** **Azure API Management (APIM) Self-Hosted Gateway** placed **in front of** Istio (the **default** in this document), and
-> **(B)** **Istio ext_authz** with a custom decision service (previous pattern).
-> This document uses **APIM** throughout. For a comparison and when to pick which, see **Appendix C — APIM Gateway vs. Ext-AuthZ Graph**.
+> Choose one at the product edge:
+> **Azure API Management (APIM) Self-Hosted Gateway** in front of Istio.
+
 
 ---
 
 ## 0) Executive Summary
 
-An **AI-Product** is the **smallest governed runtime boundary** in AIMART’s AKS platform. It encapsulates one or more **Model Units** (each unit = {(optional) Bot + model family + shared UAMI}) and treats them as a **single product unit** for compliance, identity, risk, audit, and operations.
+An **AI-Product** is the **smallest governed runtime boundary** in AIMART’s AKS platform. It encapsulates one or more **APIs** (each API loads Unity Catalog models at startup) and treats them as a **single product unit** for compliance, identity, risk, audit, and operations.
 
-Key characteristics:
+Key characteristics or an AI-product:
 
 * **Shared Identity** — one Entra ID (AAD) group set, one UAMI.
 * **Shared Risk Profile** — one MRMC classification (PII class, residency, retention).
@@ -23,19 +22,17 @@ Key characteristics:
 * **Shared Audit Trail** — one tamper-evident evidence bundle.
 * **Shared Operations** — one SLO/SLA, one incident response playbook.
 
-If any of these differ, the boundary must split into **two AI-Products**.
+Key characteristics of these flavor:
 
----
+* **API-only runtime**: The **Developer API** is the sole deployed workload per stage.
+* **Models are not deployed**: they are **registrations** in Unity Catalog/MLflow and are **fetched at startup** by alias.
+* **Two namespaces**:
 
-## 1) Context
-
-AIMART requires a **governed runtime unit** that is:
-
-* **Small enough** to enforce compliance consistently.
-* **Large enough** to avoid operational explosion.
-* **Uniform in evidence** for regulators and auditors.
-
-The AI-Product provides that unit.
+  * **Evaluation** (`ai-product-eval`, `UAMI-EVAL`): **Auditor/Evaluator ingress only**, **read-only egress**, admitted aliases = `evaluation|shadow|candidate`.
+  * **Serving** (`ai-product-serve`, `UAMI-SERVE`): **Consumer + A2A ingress**, governed egress to prod sources, admitted alias = `production`.
+* **Optional Teams**: API can be **registered with Azure Bot Service** and expose **`/api/messages`**; there is **no bot pod**.
+* **No Hot Reload**: alias changes in UC **require a redeploy**; the API does **not** live-swap models.
+* **Evidence**: APIM decisions + API startup alias-conformance/materialization records → **Stage bundle** (Eval/Serve) → **AI-Product bundle**.
 
 ---
 
@@ -43,8 +40,8 @@ The AI-Product provides that unit.
 
 Define an **AI-Product** as:
 
-* One **namespace** in AKS.
-* One **shared Entra ID group model + UAMI**.
+* One or two **namespaces** in AKS (Eval + Serve).
+* One **shared Entra ID group model + UAMI per stage**.
 * One **MRMC profile**.
 * One **Unity Catalog schema**.
 * One **ingress/egress boundary**.
@@ -56,773 +53,401 @@ Define an **AI-Product** as:
 
 ---
 
-## 3) Consequences
+## 3) Stage Model
 
-* **Positive:**
+**One AI-Product → Two namespaces; API-only runtime; single UAMI per stage; strict alias admission; no hot reload.**
 
-  * Consistent risk, identity, and evidence boundaries.
-  * Easier MRMC review, reproducibility, and traceability.
-  * Clear split rules when differences arise.
+| Stage      | Namespace          | UAMI         | Admitted Aliases                       | Ingress (APIM→Istio)                        | Egress (Istio Egress GW)                                                                                 |
+| ---------- | ------------------ | ------------ | -------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Evaluation | `ai-product-eval`  | `UAMI-EVAL`  | `@evaluation-*` | **Auditors/Evaluators only** (no Consumers) | UC **read**, DataMesh **read (test)**, observability; optional **shadow** sources; **no prod writes**    |
+| Serving    | `ai-product-serve` | `UAMI-SERVE` | `@production-*`                          | **Consumers + A2A**                         | UC read, DataMesh **read/write (prod)**, **Kafka A2A topics**, observability; others **deny** by default |
 
-* **Negative:**
+**Hard rules**
 
-  * Namespace sprawl (each AI-Product = one namespace).
-  * Some duplication (multiple Bots if different AI-Products).
+1. **Exactly one UAMI per stage**.
+2. **Alias conformance** is **mandatory**. The API **must refuse** to load any model whose alias is not admitted for the stage.
+
+---
+
+## 4) Runtime Model (API-Only)
+
+**What runs:** A **Developer-built API container** per stage (optionally exposing `/api/messages` for Teams).
+**Model Families:** Defined as a model registry entry **in Unity Catalog** AI-product schema with (versions, aliases, lineage, artifacts, evaluation evidence).
+
+**API responsibilities**
+
+1. **Alias Gate at Startup (hard-fail).**
+2. **Resolve & Fetch** artifacts from UC.
+3. **Emit Evidence on Startup** (alias-conformance + materialization).
+4. **Least Privilege** via UAMI-scoped permissions.
+5. **Single Ingress Channel** (APIM→Istio).
+
+---
+
+## 2) Rationale & Consequences
+
+**Why this model works**
+
+* **Stage separation** — Evaluation remains controlled and observable for auditors, while Serving stays streamlined for consumers and A2A integration.
+* **Developer autonomy** — Teams can design richer APIs (batch, async, Teams integration) without being constrained by a fixed serving stack.
+* **Evidence consolidation** — Startup checks, ingress policies, and runtime decisions are captured in one place, producing a clean, tamper-evident audit trail.
+
+**Trade-offs and obligations**
+
+* **Alias enforcement** — APIs must strictly reject models not admitted for the stage; otherwise compliance boundaries collapse.
+* **Ingress/Egress governance** — Network rules must be precisely defined, with default-deny enforced and allowlists approved through MRMC.
+* **Shared responsibility model** — Owners, engineers, and auditors need clear accountability for gates (startup alias checks, MRMC promotion, CI/CD drift guards).
+* **Operational overhead** — Two namespaces (Eval/Serve) introduce more moving parts; strong cookbook adherence is required to keep operations consistent.
 
 ---
 
 # Part I — Principles
 
----
-
-## 4) Model Unit
-
-A **Model Unit** is the atomic building block inside an AI-Product.
-
-**Definition**:
-
-* **Composition:** { **Model Family** (all versions) + **shared UAMI** + *(optional)* **Bot** }.
-* **Bot role:** The Bot handles `/api/messages` (Teams channel) and `/info/*` (governance endpoints), and securely routes traffic to the family’s deployed model versions.
-
-**Why**:
-
-* Stable human interface.
-* Controlled canary/shadow testing.
-* Resilient (Bot failures do not kill model).
-
----
-
-## 4a) **Model Family**
-
-A **Model Family** is the logical grouping of **all versions and releases** of a single model lineage within an AI-Product.
-
-**Definition**
-
-* A **Model Family** = { all model versions derived from the same training lineage + metadata + evaluation bundles }.
-* It represents the **semantic identity** of a model (e.g., *“Customer Support LLM”*, *“Risk Scoring XGBoost”*).
-* Each Model Family is bound to **exactly one Bot interface** (if present), which provides continuity of human/API access even as underlying versions evolve.
-
----
-
-### Scope of a Model Family
-
-* **Versions:** Every model registered (v1, v2, … vN) and promoted to a deployment stage.
-* **Lifecycle:** Experimental → Candidate → Deployed → Retired (tracked in Unity Catalog + MLflow).
-* **Lineage:** All versions share the same **UC schema**, **risk profile**, and **Entra ID group set** inside one AI-Product.
-* **Evidence hierarchy:** Each model version creates its own evaluation evidence. These are rolled up at the **Family level**, then further aggregated with networking, identity, and operations evidence into the **AI-Product bundle**. Regulators always consume the **AI-Product bundle**, but can drill down into Family or version evidence if needed.
-
----
-
-### Deployment Rules
-
-* **Not all versions are deployed.**
-
-  * Historical versions remain in **Unity Catalog** for lineage and reproducibility.
-  * Only a **limited set of versions** are live at any given time (e.g., *current prod*, *canary*, *shadow*).
-* **Max active versions** per family is pre-agreed in governance (e.g., *≤3 live versions* simultaneously).
-* **Aliases** manage which version is active under a stable name:
-
-  * `@production-champion` → current production version.
-  * `@production-candidate` → canary under evaluation.
-  * `@production-shadow` → receiving mirrored traffic for testing.
-  * Aliases are **governed in Unity Catalog/MLflow** and surfaced via Bot and Istio routing.
-
----
-
-### Traffic Management
-
-* **Family endpoint (default):**
-
-  * Consumers call the family domain (e.g., `riskscorer.ai-product`).
-  * Istio routes based on alias weights: 90% `@production-champion` (v1.0), 10% `@production-candidate` (v1.1), shadow traffic to v2.0.
-
-* **Direct version endpoints (explicit):**
-
-  * Deterministic call to `riskscorer-v1.ai-product...` or `riskscorer-v2...`.
-  * Only exposed for **auditors/evaluators** under policy.
-  * Still subject to edge AuthN/Z (via APIM) and mesh evidence logging.
-
----
-
-## 5) AI-Product Principles
-
-**Identity & Access**
-
-* All access governed by **Entra ID (AAD) groups** (or App Roles where feasible).
-* APIM validates tokens and (when required) resolves **group membership** via Microsoft Graph.
-* Service-to-service traffic represented by **shared UAMI**.
-
-**Risk & Compliance**
-
-* One MRMC profile per AI-Product.
-
-**Data**
-
-* One UC schema per AI-Product (models, experiments, volumes).
-
-**Networking**
-
-* **APIM Self-Hosted Gateway (edge)** in front of **Istio IngressGateway**.
-* One Istio egress gateway with allowlists.
-* Default-deny internal traffic (only Bot↔Model Family allowed by default).
-
-**Audit & Evidence**
-
-* One tamper-evident bundle.
-* Captures identity/auth, data lineage, build digests, runtime metrics, and APIM correlation/evidence.
-
-**Operations**
-
-* One SLO/SLA per product.
-* Shared on-call, incident response, and rollout strategies.
-
----
-
-## 6) Elements not covered
-
-This document defines the technical runtime and governance boundaries of an AI-Product.
-To be fully enterprise-ready, the following dimensions must still be elaborated elsewhere:
-
-* **Lifecycle & GitOps pipeline**.
-* **Approval chains** and SoD.
-* **Ops & escalation flow**.
-* **Risk taxonomy alignment** (MRMC ↔ EU AI Act).
-
----
-
-# Part II — Reference Implementation
-
----
-
-## 6) Identity Options
-
-### Option A — **1 SA / 1 UAMI** *(PoC only)*
-
-(unchanged; discouraged for production)
-
-### Option B — **N SAs / 1 shared UAMI** *(default pattern)*
-
-(unchanged; recommended)
-
-**Guardrails:**
-
-* CI/CD renders expected FIC subjects; **fail on drift**.
-* **APIM** enforces per-route audiences/roles/groups.
-* Logs/traces carry `product_id`, `model_id`, `model_version`, `env`, `stage`.
-
-### Option C — **N SAs / N UAMIs** *(discarded)*
-
-(unchanged; split into separate AI-Products if needed)
-
-> **Hard rule:** An AI-Product **MUST** use exactly one UAMI. If a deployment requires a different UAMI, the boundary must split into multiple AI-Products.
-
----
-
-## 7) Access & Networking Model
-
-### Ingress (APIM → Istio)
-
-* **APIM Self-Hosted Gateway** performs:
-
-  * JWT validation (issuer/audience/signature).
-  * **Group/role authorization** per route (policy).
-  * Optional **Graph** resolution for nested/overage scenarios.
-  * Abuse controls (rate limits/quotas) and header normalization.
-* **Istio IngressGateway** receives **pre-authorized** traffic from APIM and routes to Bot/MLServer.
-
-### Internal (mesh + K8s NetworkPolicy)
-
-* **Bot ↔ Model Family**: allowed by default (STRICT mTLS + service identity).
-* **Bot ↔ Bot**: not allowed unless explicitly governed.
-* **Model Family ↔ Model Family**: not allowed unless explicitly governed.
-
-### Egress
-
-* **Unity Catalog**: via Istio EgressGateway, SNI-restricted.
-* **Data Mesh**: explicit ServiceEntries + audit doc.
-* **Kafka**: whitelisted topics, tagged with UAMI.
-* **Other ad-hoc sources**: denied unless MRMC + governance approval.
-
----
-
-## 8) Protocols & Ports
-
-**All ingress paths are admitted only after edge authorization via the **APIM Self-Hosted Gateway**.**
-
-* **MLServer**
-
-  * **HTTP** → `/v2/*` on **8080** (Istio routes directly to MLServer).
-  * **gRPC** → `/inference.GRPCInferenceService` on **8081**.
-
-* **Bot**
-
-  * **Public entrypoint:** `/api/messages` (via APIM → Istio).
-  * **Info ports** (ViewerGroup-protected at APIM):
-
-    * `/info/agent`, `/info/model-card`, `/info/aibom`.
-
-* **Istio Services**
-
-  * All ports **named** (`http`, `grpc`) for consistent routing.
-
-* **Gateway routing (summary)**
-
-  * APIM regex/route → **Istio** → service:
-
-    * `^/api/messages$` → **Bot**
-    * `^/info/(agent|model-card|aibom)$` → **Bot**
-    * `^/v2/.*` (HTTP 8080) → **MLServer**
-    * `gRPC /inference.GRPCInferenceService` (8081) → **MLServer**
-
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": true, "curve": "linear"}} }%%
-flowchart LR
-
-subgraph APIM["APIM Self-Hosted Gateway<br/><span style='font-size:12px'>JWT + Groups/Roles + Quotas</span>"]
-  R1["^/api/messages$"]
-  R2["^/info/(agent|model-card|aibom)$"]
-  R3["HTTP 8080 /v2/*"]
-  R4["gRPC 8081 /inference.GRPCInferenceService"]
-end
-
-subgraph EDGE["Istio IngressGateway (IGW)"]
-end
-
-BOT["Bot (/api/messages, /info/*)<br/>SA→UAMI"]
-MLS["MLServer<br/>HTTP 8080 /v2/*<br/>gRPC 8081 /inference.GRPCInferenceService"]
-
-R1 --> EDGE --> BOT
-R2 --> EDGE --> BOT
-R3 --> EDGE --> MLS
-R4 --> EDGE --> MLS
-
-BOT -->|STRICT mTLS · azp/appid = UAMI| MLS
+## 3) Runtime Model (API-Only)
+
+**What runs:** A **Developer-built API container** per stage (optionally exposing `/api/messages` for Teams via ABS).
+**Model Families:** Exist **only in Unity Catalog/MLflow** (versions, aliases, lineage, artifacts, evaluation evidence).
+
+**API responsibilities**
+
+1. **Alias Gate at Startup (hard-fail):**
+   Read stage policy → resolve `{family, alias}` in UC → verify alias admission for the stage → **exit non-zero** on any mismatch.
+2. **Resolve & Fetch:**
+   Map alias → concrete version; download artifacts (env, weights, tokenizer, etc.); verify checksums/signatures; materialize in memory/runtime.
+3. **Evidence on Startup:**
+   Emit a signed (or hashed) **alias-conformance & materialization record** (families, aliases, resolved versions, digests, policy id).
+4. **Least Privilege:**
+   Use only the UC/DataMesh permissions authorized for the stage and bound to the stage UAMI.
+5. **Single Ingress Channel:**
+   All traffic enters via **APIM → Istio**. No side doors (NodePort/LoadBalancer/ClusterIP bypasses).
+
+**Stage policies**
+
+```yaml
+# ai-product-eval
+stage: evaluation
+allowed_aliases: [evaluation-*]
+deny_on_mismatch: true
+```
+
+```yaml
+# ai-product-serve
+stage: serving
+allowed_aliases: [production-*]
+deny_on_mismatch: true
+```
+
+**Startup denial example**
+
+```
+requested_models:
+  - family: RiskScorer
+    alias: evaluation-v1
+stage: serving
+decision: DENY (alias 'evaluation-v1' not admitted in serving stage)
+action: exit(1)
 ```
 
 ---
 
-## 9) Split Criteria (Decision Tree)
+## 4) API Surface (recommended)
+
+* **ASync/Sync inference:** `POST /predict`
+* **Batch/async (optional):** `POST /batch` → job id; `GET /batch/{id}`
+* **Health:** `GET /healthz`, `GET /readyz`
+* **Teams webhook (optional):** `POST /api/messages` (Bot Framework, handled by your API)
+* **Admin/metadata:** exposed by **Info-Ports** (operator pod), not by the API:
+
+  * `/info/agent`, `/info/model-card`, `/info/aibom` (APIM Viewer group)
+
+**APIM routing sketch**
+
+```
+^/api/messages$                     → API (Teams via ABS)
+^/(predict|batch|healthz|readyz)$   → API
+^/info/(agent|model-card|aibom)$    → Info-Ports
+```
+
+---
+
+## 5) Identity & RBAC (per stage)
+
+* **One UAMI per stage**; all K8s SAs federate to that UAMI (Option B).
+* CI/CD renders expected FIC subjects; **fail on drift**.
+
+| Group     | Evaluation                   | Serving                       |
+| --------- | ---------------------------- | ----------------------------- |
+| Owner     | Full admin                   | Full admin                    |
+| Engineer  | Deploy API, manage config    | Deploy API, manage config     |
+| Developer | Experiments, offline tests   | N/A or limited                |
+| Consumer  | N/A                          | Invoke inference              |
+| Auditor   | Access eval evidence/metrics | Access serve evidence/metrics |
+
+---
+
+## 6) Networking & Access
+
+**Ingress (both stages):**
+APIM (JWT, roles/groups, quotas) → Istio IngressGateway → API / Info-Ports.
+
+* **Evaluation**: only **Auditor/Evaluator** APIM products.
+* **Serving**: **Consumers + A2A** APIM products.
+
+**Internal mesh:**
+
+* API only + Info-Ports (operator).
+* No inter-API calls unless explicitly allowed (AuthorizationPolicy + ServiceEntries).
+
+**Egress:**
+
+* **Evaluation:** UC read, DataMesh read(test), observability, optional “shadow” sources; deny everything else.
+* **Serving:** UC, DataMesh (prod R/W), Kafka A2A topics, observability; deny others unless MRMC-approved.
+
+---
+
+## 7) Info-Ports Pod (operator-owned)
+
+* **/info/agent** — stage, UAMI, API metadata (for cards).
+* **/info/model-card** — “what is materialized now” (families, aliases, versions, digests).
+* **/info/aibom** — stage AI-BOM (models + transitive tools).
+* **Security:** APIM Viewer group. **Separation:** keeps governance surfaces stable and decoupled from API code.
+
+---
+
+## 8) Kafka A2A
+
+* **Serving**: use whitelisted topics (e.g., `product.{id}.serve.in/out`), headers: `product_id, stage, uami_id, request_id`.
+* **Evaluation**: optional eval topics; **no prod fan-out**.
+
+---
+
+# Part II — Diagrams
+
+## A) Topology (API-only)
 
 ```mermaid
-%%{init: {"flowchart": {"htmlLabels": true, "curve": "linear"}} }%%
-flowchart TD
-  Q1["Do Deployments differ in:<br/>AAD groups/UAMI<br/>MRMC profile<br/>UC schema<br/>Ingress/egress<br/>Audit requirements<br/>Ops/SLOs<br/>Business unit/cost center?"]
+flowchart LR
+  APIM[APIM Self-Hosted Gateway<br/>JWT · Groups/Roles · Quotas] --> IGW[Istio IngressGateway]
 
-  Q1 -->|Yes| New["Create more than one AI-Product"]
-  Q1 -->|No| Same["Stay in one AI-Product"]
+  subgraph EVAL[AI-Product-Eval · Namespace]
+    APIE[Developer API<br/>aliases=evaluation,shadow,candidate]
+    INFOE[Info-Ports Pod]
+    UAMIE[UAMI-EVAL]
+  end
+
+  subgraph SERVE[AI-Product-Serve · Namespace]
+    APIS[Developer API<br/>aliases=production]
+    INFOS[Info-Ports Pod]
+    UAMIS[UAMI-SERVE]
+  end
+
+  APIM --> IGW --> APIE
+  APIM --> IGW --> APIS
+  APIM --> IGW --> INFOE
+  APIM --> IGW --> INFOS
+
+  APIE --> UC[Unity Catalog / MLflow]
+  APIS --> UC
+  EVAL --> DMTEST[DataMesh test, read-only]
+  SERVE --> DM[DataMesh prod R/W]
+  SERVE --> KAF[Kafka A2A topics]
+  EVAL --> OBS[Observability]
+  SERVE --> OBS
+```
+
+---
+
+## B) **Teams via Azure Bot Service** → APIM → Istio → **API** 
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Teams as Microsoft Teams Client
+  participant ABS as Azure Bot Service (Cloud)
+  participant APIM as APIM SHGW (edge)
+  participant IGW as Istio IngressGateway
+  participant API as AI-Product API (/api/messages)
+
+  Teams->>ABS: Send message (Bot Framework)
+  ABS->>APIM: POST /api/messages (BF JWT)
+  APIM->>APIM: Validate JWT (iss/aud/sig) + policy (groups/roles/quotas)
+  alt Allowed
+    APIM->>IGW: Forward (pre-authorized)
+    IGW->>API: /api/messages
+    API-->>ABS: 200 + activity
+    ABS-->>Teams: Deliver response
+  else Denied
+    APIM-->>ABS: 401/403
+  end
+```
+
+---
+
+## C) **Consumer** → APIM → Istio → **API**
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as Consumer (AAD App/User)
+  participant APIM as APIM SHGW
+  participant IGW as Istio IngressGateway
+  participant API as AI-Product API
+
+  U->>APIM: POST /predict (Bearer AAD token)
+  APIM->>APIM: Validate JWT + quotas + groups/roles
+  alt Allowed
+    APIM->>IGW: Forward
+    IGW->>API: POST /predict
+    API-->>U: 200 {prediction, trace_id}
+  else Denied
+    APIM-->>U: 401/403
+  end
+```
+
+---
+
+## D) **A2A (Kafka)** — Serving stage
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A2A as Producer/Consumer (UAMI-SERVE)
+  participant K as Kafka Cluster (allowed topics)
+
+  A2A->>K: Produce/Consume on whitelisted topics
+  Note over A2A,K: Headers: product_id, stage, uami_id, request_id\nACLs & retention meet MRMC policy
+```
+
+---
+
+
+
+---
+
+## F) **Promotion** Eval → Serve (MRMC-gated)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant APIE as API (Eval)
+  participant MR as MRMC Gate
+  participant CI as CI/CD
+  participant APIS as API (Serve)
+
+  APIE->>MR: Submit evidence (metrics, safety, lineage, eval datasets)
+  MR->>MR: Assess risk/PII/residency + required controls
+  alt Approved
+    MR->>CI: Approve promotion
+    CI->>APIS: Deploy Serve image + policy {allowed_aliases:[production]}
+    APIS->>UC: Resolve production aliases
+    APIS->>APIS: Verify + materialize
+    APIS-->>CI: Ready
+  else Rejected
+    MR-->>APIE: Findings + remediation steps
+  end
 ```
 
 ---
 
 # Part III — Operations
 
----
+## 9) CI/CD Guardrails
 
-## 10) RBAC Model (AAD Group → Privilege)
+* **Build**: SBOM, signatures, image digest pinning.
+* **Deploy**:
 
-| Group (AAD)   | Privileges                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Owner**     | Full administrative control of the AI-Product, including approving promotions and lifecycle changes          |
-| **Engineer**  | Deploy model releases, manage manifests and configurations, access runtime logs, and trigger CI/CD pipelines |
-| **Developer** | Conduct experiments, use lab/evaluation environments, and trigger CI/CD pipelines for builds and tests       |
-| **Consumer**  | Invoke inference APIs (`/v2/*`, gRPC) and interact via the Teams channel                                     |
-| **Auditor**   | Access observability and compliance evidence: runtime logs, audit bundles, and Unity Catalog references      |
+  * Inject `stage` + `aliasPolicy` + `uamiClientId` via Helm.
+  * Render expected FIC subjects (SAs↔UAMI); **fail on drift**.
+  * Deny if startup evidence indicates alias mismatch.
+* **Promotion**: MRMC approval gates; flip from Eval to Serve by redeploying API with **production-only** policy.
 
-> More details in the RBAC document.
+**Helm values (skeleton)**
 
----
+```yaml
+stage: serving
+uamiClientId: "<GUID-UAMI-SERVE>"
+aliasPolicy:
+  allowedAliases: ["production-*"]
 
-## 11) Audit & Evidence (Aggregated)
+apim:
+  routes:
+    - "^/predict$"
+    - "^/batch$"
+    - "^/api/messages$"
+    - "^/healthz$"
+    - "^/readyz$"
 
-Audit evidence is collected at **three levels** — **per-version**, **per-family**, and **per AI-Product** — and aggregated into a **tamper-evident bundle**.
-
-### Evidence Layers
-
-* **Per-Version Evidence (atomic)**
-
-  * Evaluation logs, test results, safety metrics
-  * Training lineage, model card, parameter/configuration digests
-
-* **Model Family Evidence (rolled-up)**
-
-  * All version evidence within the Family
-  * Lineage across versions (candidate → shadow → canary → champion → retired)
-  * Promotion/retirement history, alias changes
-
-* **AI-Product Evidence (final bundle)**
-
-  * Aggregates all Family bundles with infrastructure, networking, and operations evidence
-  * Includes **APIM policy decision logs** (request IDs, required groups/roles, Graph correlation IDs, decision)
-
----
-
-### Evidence Dimensions (always included)
-
-* **Identity & Authorization**
-
-  * Entra ID group GUID/role checks (performed by APIM)
-  * APIM correlation IDs and decision outcome (allow/deny)
-
-* **Data & Lineage**
-
-  * Unity Catalog schema references; families/versions ↔ experiments/volumes/artifacts
-
-* **Build & Provenance**
-
-  * Container/image digests, CI/CD run IDs
-  * Supply chain metadata (SBOMs, checksums, signatures)
-
-* **Runtime & Operations**
-
-  * Logs, metrics, and observability tags (`product_id`, `family_id`, `model_id`, `model_version`, `env`)
-  * Incident tickets, SLO/SLA adherence, rollout/rollback history
-
----
-
-# Part IV — Diagrams
-
----
-
-## 12) Canonical AI-Product Flow (APIM → Istio)
-
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": true, "curve": "linear"}} }%%
-flowchart LR
-
-  %% External actors and channels
-  subgraph CLIENTS[Clients]
-    Teams[Microsoft Teams]
-    Agents[A2A Agents]
-    Client[Client]
-  end
-
-  %% Edge and authorization
-  APIM[APIM Self-Hosted Gateway<br/>JWT · Groups/Roles · Quotas]
-  IGW[Istio IngressGateway<br/>TLS · Default Deny · CORS at Edge]
-
-  Client -->|AAD Token| APIM
-  Teams -->|/api/messages BF JWT| APIM
-  Agents -->|/info/* AAD Token| APIM
-  APIM --> IGW
-
-  %% AI Product namespace
-  subgraph NS[AI Product · Namespace]
-    direction TB
-
-    UAMI[Shared AI Product UAMI]
-
-    subgraph NSs[Model Unit]
-      subgraph BOTGRP[Bot · Assigned to One Model Family]
-        BOT[Bot Deployment<br/>K8s SA→UAMI]
-        INFO1[info agent]
-        INFO2[info model card]
-        INFO3[info aibom]
-        BOT --- INFO1
-        BOT --- INFO2
-        BOT --- INFO3
-      end
-
-      subgraph MODEL[Model Family · All Versions]
-        direction LR
-        V1[MLServer v1<br/>K8s SA]
-        V2[MLServer v2<br/>K8s SA]
-        VN[MLServer vN<br/>K8s SA]
-      end
-    end
-
-    UAMI -. FIC federation .- BOT
-    UAMI -. FIC federation .- V1
-    UAMI -. FIC federation .- V2
-    UAMI -. FIC federation .- VN
-
-    IGW -->|/v2/models/*| MODEL
-    IGW -->|/api/messages| BOT
-    IGW -->|/info/*| BOT
-
-    BOT -->|mTLS S2S (azp/appid = UAMI)| V1
-    BOT -->|mTLS S2S canary/shadow| V2
-    BOT -->|mTLS S2S selected| VN
-  end
-
-  UC[Unity Catalog Schema]
-  DM[DataMesh]
-  NX[Nexus Artifacts]
-  TOPIC[Kafka Topic (bot/model/A2A)]
-
-  NS -->|Egress/Ingress| UC
-  NS -->|Egress/Ingress| DM
-  NS -->|Egress/Ingress| NX
-  NS -->|Egress/Ingress| TOPIC
+egress:
+  allow:
+    - unityCatalog
+    - datamesh.prod
+    - kafka:
+        topics: ["product.<id>.serve.in", "product.<id>.serve.out"]
+    - observability
 ```
 
 ---
 
-### 12b) Multiple Model Units (APIM → Istio)
+## 10) Observability & Evidence
 
-```mermaid
-%%{init: {"flowchart": {"htmlLabels": true}} }%%
-flowchart LR
+* **Traces/metrics/logs** tagged with `product_id, api_id, stage, uami_id, family_id, model_id, model_version, alias, request_id`.
+* **Startup evidence blob** (JSON) includes:
 
-  APIM[APIM SHGW<br/>JWT + Groups/Roles]
-  %% ===== Clients =====
-  subgraph CLIENTS [Clients]
-    Teams[Microsoft Teams]
-    Human[Browser]
-    Service[AAD token access]
-  end
-
-  %% ===== Namespace =====
-  subgraph NS [AKS Namespace · AI Product]
-    IGW[Istio:<br/>IngressGateway<br/>STRICT mTLS<br/>Default Deny<br/>Edge CORS]
-
-    direction TB
-      X[Model Unit: model x]
-      Y[Model Unit: model y]
-  end
-
-  UC[AIMART]
-  DM[DataMesh]
-  KA[Kafka A2A]
-  NX[Nexus]
-
-  %% ===== External to Edge =====
-  Teams -->|BF JWT| APIM
-  Human -->|SSO| APIM
-  Service -->|AAD JWT| APIM
-  APIM --> IGW
-
-  %% ===== Edge routing to services =====
-  IGW <-->|TeamsChannel x| X
-  IGW <-->|TeamsChannel y| Y
-  IGW --> X
-  IGW --> Y
-
-  Y <-->|Query model x/y| X
-
-  %% ===== Egress on the right =====
-  X -->|Egress/Ingress| UC
-  X -->|Egress/Ingress| DM
-  X -->|Egress/Ingress| KA
-  X -->|Egress/Ingress| NX
-  Y -->|Egress/Ingress| UC
-  Y -->|Egress/Ingress| DM
-  Y -->|Egress/Ingress| KA
-  Y -->|Egress/Ingress| NX
-```
+  * Stage policy id, allowed aliases, UC resolution results (families → version ids), artifact digests/signatures, decision.
+* **APIM decision logs** (route id, required groups/roles, Graph correlation id, decision).
+* **Bundle roll-up**: Version → Family → **Stage** → **AI-Product**.
 
 ---
 
-## 13) Protocol Sequences (APIM-first)
+## 11) Security & Risk Controls
 
-### Internal Communication Classes
-
-* **Default internal hop:** **Bot ↔ Model Family (paired)** via STRICT mTLS + service identity; **no AAD group check** on internal hop.
-* **Non-default:** **Bot ↔ Bot** and **Model Family ↔ Model Family** require explicit mesh policies.
-
-### Sequences
-
-#### Teams → APIM → Istio → Bot → Model Family
-
-```mermaid
-sequenceDiagram
-  participant T as Teams
-  participant A as APIM SHGW
-  participant G as Microsoft Graph
-  participant I as Istio Gateway
-  participant B as Bot Deployment
-  participant M as Model Family (paired)
-
-  T->>A: POST /api/messages (BF JWT)
-  A->>A: Validate JWT (iss/aud/sig)
-  alt overage/nested groups
-    A->>G: Resolve memberships
-    G-->>A: Groups + corr ID
-  end
-  A->>A: Policy eval (required groups/roles, quotas)
-  alt allowed
-    A->>I: Forward (pre-authorized)
-    Note over B,M: AllowedServicePolicy-Pair (default)<br/>STRICT mTLS + service identity
-    I->>B: /api/messages
-    B->>M: mTLS S2S (UAMI)
-    M-->>B: 200 OK
-    B-->>T: 200 OK
-  else denied
-    A-->>T: 401/403
-  end
-```
+* **Default-deny egress**; explicit allowlists per stage.
+* **Istio mTLS** everywhere; named ports (`http`, `grpc`) for routing determinism.
+* **JWT validation at APIM**; optional Graph lookups for nested/overage groups.
+* **No token fan-out**; API uses stage UAMI for A2A/service calls.
+* **Data residency & retention** enforced via MRMC profile per stage (e.g., eval datasets vs prod sources).
 
 ---
 
-#### Service (UAMI) → APIM → Istio → Model Family (direct ingress)
+## 12) Failure Modes & Responses
 
-```mermaid
-sequenceDiagram
-  participant S as Service (UAMI)
-  participant A as APIM SHGW
-  participant G as Microsoft Graph
-  participant I as Istio Gateway
-  participant M as Model Family
-
-  S->>A: POST /v2/... (AAD JWT)
-  A->>A: Validate JWT + audience/azp == UAMI
-  alt overage/nested groups
-    A->>G: Resolve memberships
-    G-->>A: Groups + corr ID
-  end
-  A->>A: Policy eval (required groups/roles)
-  alt allowed
-    A->>I: Forward to Model Family
-    I->>M: Route
-    M-->>S: 200 OK
-  else denied
-    A-->>S: 401/403
-  end
-```
+| Failure                            | Detection                                   | Response                                                   |
+| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------- |
+| Alias mismatch at startup          | API exits non-zero; readiness never green   | Roll back release; fix UC alias or policy; redeploy        |
+| Artifact digest/signature mismatch | Startup evidence shows verification failure | Quarantine artifacts; re-publish signed bundle; redeploy   |
+| APIM policy misconfig (denies)     | 401/403 at edge                             | Correct APIM product/policy; redeploy if route set changes |
+| UAMI federation drift              | CI/CD FIC drift check fails                 | Correct SA↔UAMI bindings; re-apply workload identity       |
+| Egress denial                      | Istio deny logs                             | Update allowlist; MRMC sign-off if new destination         |
 
 ---
 
-#### Human → APIM → Istio → Model Family (read APIs)
+## 13) Split Criteria (stay one AI-Product or split?)
 
-```mermaid
-sequenceDiagram
-  participant U as AAD User
-  participant A as APIM SHGW
-  participant G as Microsoft Graph
-  participant I as Istio Gateway
-  participant M as Model Family
+Split into **multiple AI-Products** if any of the following differ and cannot be reconciled:
 
-  U->>A: GET /v2/models (Bearer AAD JWT)
-  A->>A: Validate JWT
-  A->>G: (optional) group resolution
-  G-->>A: memberships + corr ID
-  A->>A: Policy eval
-  alt allowed
-    A->>I: Forward
-    I->>M: Route
-    M-->>U: 200 OK
-  else denied
-    A-->>U: 401/403
-  end
-```
-
----
-
-#### Viewer → APIM → Istio → Bot info ports (`/info/*`)
-
-```mermaid
-sequenceDiagram
-  participant V as Viewer (AAD)
-  participant A as APIM SHGW
-  participant G as Microsoft Graph
-  participant I as Istio Gateway
-  participant B as Bot Deployment
-
-  V->>A: GET /info/model-card|/info/aibom|/info/agent
-  A->>A: Validate JWT + Viewer group/role
-  A->>G: (optional) group resolution
-  G-->>A: memberships + corr ID
-  alt allowed
-    A->>I: Forward
-    I->>B: Route
-    B-->>V: 200 OK (JSON)
-  else denied
-    A-->>V: 401/403
-  end
-```
+* UAMI or AAD group model
+* MRMC profile (PII class, residency, retention)
+* UC schema ownership or data scope
+* Ingress/egress policies or Kafka topic boundaries
+* Audit requirements or ops/SLO envelope
+* Cost center / business ownership
 
 ---
 
 # Appendices
 
-## Appendix A — **APIM at the Edge (Operational Model)**
+## Appendix A — Info-Ports Contract
 
-**Purpose**
-APIM provides a **centralized decision point** for token validation and group/role authorization, with optional Microsoft Graph evaluation for nested/overage groups. It also offers quotas, products, and request normalization before traffic reaches the mesh.
+* **GET /info/agent** → stage, UAMI id, API id/version
+* **GET /info/model-card** → `{ family, alias, version, digests, timestamp }[]` (materialized set)
+* **GET /info/aibom** → aggregated SBOM/AI-BOM across materialized models
+* **Security**: APIM Viewer group only; cacheable; optional response signing
 
-**Design Goals**
+## Appendix D — MRMC Gate (checklist)
 
-1. **Centralization** of AuthN/Z and abuse controls.
-2. **Policy-as-config** (APIM policies) separate from service code.
-3. **Minimal mesh complexity** (Istio focuses on routing/mTLS).
-4. **Auditability** — every decision emits evidence (request ID, required groups/roles, Graph corr ID, outcome).
-5. **Security** — APIM SHGW runs **in-cluster**; traffic to Istio uses TLS.
-
-**High-Level Flow**
-
-1. Client calls APIM with AAD token.
-2. APIM validates JWT.
-3. If needed, APIM resolves memberships via Microsoft Graph.
-4. APIM enforces required groups/roles/quotas.
-5. On **allow**, APIM forwards to Istio; on **deny**, APIM returns 401/403.
-6. Decision evidence is logged and later rolled into the AI-Product audit bundle.
-
----
-
-## Appendix B — **Shadow Deployments in Model Families**
-
-*(unchanged from your prior version; still valid with APIM at the edge)*
-
-> … (keep the full Shadow appendix you approved previously)
-
----
-
-
-# Appendix C — **APIM Gateway vs. Ext-AuthZ Graph**
-
-## Purpose
-
-This appendix evaluates two alternative designs for **authorization at the AI-Product edge**:
-
-1. **Azure API Management (APIM) Gateway (SHGW)** placed in front of Istio.
-2. **Ext-AuthZ Graph** — a lightweight custom service integrated with Istio’s `ext_authz` filter.
-
-Both provide centralized group-based authorization using Microsoft Entra ID (AAD) + Graph, but differ in **placement, operational burden, and feature scope**.
-
----
-
-## Comparison Table
-
-| Dimension                             | **APIM SHGW**                                        | **Ext-AuthZ Graph**                                   |
-| ------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------- |
-| **Placement**                         | Runs in AKS before Istio IngressGateway              | Invoked inside Istio IGW via `ext_authz`              |
-| **JWT Validation**                    | Built-in (issuer/audience/signature, claims mapping) | Performed at Istio; service only decides allow/deny   |
-| **Group Checks**                      | APIM policy calls Graph API (via MI)                 | Service calls Graph API directly                      |
-| **Handling Overage/Nested Groups**    | Supported via policy + Graph lookup                  | Supported natively in service logic                   |
-| **Rate Limiting / Quotas**            | First-class features                                 | Not included (requires Istio rate-limit or app logic) |
-| **Request/Response Transformation**   | Rich (headers, body, routing)                        | Not intended; allow/deny only                         |
-| **Latency**                           | Extra hop before Istio                               | Local in-mesh RPC                                     |
-| **Operational Burden**                | Maintain APIM images, policy XML, licensing          | Maintain small K8s service (Go/Python)                |
-| **Cost**                              | APIM licensing + node resources                      | Pod resource cost only                                |
-| **Audit & Evidence**                  | Logs + policy outputs + Graph corr IDs               | Fully customizable evidence schema                    |
-| **Developer Portal / Productization** | Built-in (nice for external consumers)               | N/A                                                   |
-| **Security Surface**                  | Larger (full gateway stack)                          | Minimal (single decision API)                         |
-| **Upgrade Lifecycle**                 | Track APIM versions, policy compat                   | Service versioning independent of Istio               |
-| **Best For**                          | External API consumers, quotas, commercial API mgmt  | Internal mesh enforcement, GitOps-driven policies     |
-
----
-
-## Pattern A — APIM (Self-Hosted Gateway) → Istio
-
-**Flow:**
-Client → **APIM SHGW** (JWT validation, Graph check, quotas, transformations) → **Istio IGW** → Bot/MLServer.
-
-**Strengths**
-
-* Rich API management: quotas, developer portal, transformations.
-* No custom code for Graph integration (all via APIM policy).
-
-**Weaknesses**
-
-* Additional hop before mesh.
-* Policy DSL (XML) managed separately from Istio GitOps.
-
----
-
-## Pattern B — Istio IGW + `ext_authz` → Ext-AuthZ Graph
-
-**Flow:**
-Client → **Istio IGW** (JWT validation) → `ext_authz` call → **Ext-AuthZ Graph** (Graph membership check, evidence) → allow/deny → route to Bot/MLServer.
-
-**Strengths**
-
-* Lightweight service, entirely GitOps-driven.
-* Native Istio integration; evidence schema under your control.
-* Small surface area; no extra gateway.
-
-**Weaknesses**
-
-* No built-in quotas or transformations.
-* You own service lifecycle (caching, HA, Graph call hygiene).
-
----
-
-## Hybrid Pattern (Recommended)
-
-**Separation of concerns:**
-
-* **Public / external traffic (Teams, partners):**
-  APIM SHGW → Istio.
-  *Rationale:* quotas, client products, developer portal, abuse controls.
-
-* **Internal traffic (Bots ↔ Models, A2A mesh):**
-  Istio IGW + Ext-AuthZ Graph.
-  *Rationale:* mesh-native, low-latency, policy-as-data in Git.
-
-**Evidence unification:**
-Both APIM and Ext-AuthZ Graph emit identical evidence fields into the **AI-Product audit bundle**:
-`request_id`, `route_id`, `required_group_guids`, `resolved_groups`, `decision`, `graph_corr_id`, `token_fingerprint`, `product_id`, `env`, `ts`.
-
----
-
-## Decision Guidance
-
-* If **external API productization** is primary → **APIM SHGW**.
-* If **mesh-internal enforcement** is primary → **Ext-AuthZ Graph**.
-* If you need both (most AIMART AI-Products) → **Hybrid**.
-
-
-```mermaid
-sequenceDiagram
-  title Pattern A — APIM (Self-Hosted Gateway) in front of Istio
-
-  participant C as Client (Teams/Human/Service)
-  participant A as APIM SHGW
-  participant G as Microsoft Graph (Entra)
-  participant I as Istio IngressGateway
-  participant B as Bot
-  participant M as MLServer/Model Family
-
-  C->>A: Request + AAD Access Token
-  A->>A: Validate JWT (iss/aud/sig)
-  alt Group overage or nested groups
-    A->>G: Resolve memberships (Managed Identity)
-    G-->>A: Groups result + corr ID
-  end
-  A->>A: Policy eval (required groups / quotas)
-  alt Allowed
-    A->>I: Forward (pre-authorized) + authz headers
-    opt Route to Bot
-      I->>B: /api/messages or /info/*
-      B-->>C: 2xx
-    end
-    opt Route to Model
-      I->>M: /v2/* (HTTP) or gRPC
-      M-->>C: 2xx
-    end
-  else Denied
-    A-->>C: 401/403
-  end
-```
-
-```mermaid
-sequenceDiagram
-  title Pattern B — Istio ext_authz with Ext-AuthZ Graph (custom)
-
-  participant C as Client (Teams/Human/Service)
-  participant I as Istio IngressGateway
-  participant X as Ext-AuthZ Graph (decision svc)
-  participant G as Microsoft Graph (Entra)
-  participant B as Bot
-  participant M as MLServer/Model Family
-
-  C->>I: Request + AAD Access Token
-  I->>I: Validate JWT (iss/aud/sig)
-  I->>X: ext_authz check (route's required group GUIDs)
-  alt Cache miss or overage
-    X->>G: Resolve memberships (nested/overage)
-    G-->>X: Groups result + corr ID
-  end
-  X-->>I: allow/deny + evidence (decision, corr ID)
-  alt Allowed
-    opt Route to Bot
-      I->>B: /api/messages or /info/*
-      B-->>C: 2xx
-    end
-    opt Route to Model
-      I->>M: /v2/* (HTTP) or gRPC
-      M-->>C: 2xx
-    end
-  else Denied
-    I-->>C: 401/403
-  end
-```
+* Alias-conformance evidence present and signed/hashed.
+* Evaluation metrics & safety tests meet thresholds.
+* Data residency/retention aligned with stage.
+* Supply chain: SBOM, signatures, provenance verified.
+* Egress allowlists match declared sources/destinations.
+* Rollback & incident playbook validated.
