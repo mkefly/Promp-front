@@ -1,1 +1,91 @@
 
+Got it ✅ — thanks for clarifying. So:
+
+* **CID is always high-sensitivity**.
+* **Green Zone CID** = can move across geographical regions (transferable).
+* **Red Zone CID** = cannot leave its original jurisdiction (non-transferable).
+
+Here’s the **rewritten full Executive Summary** with that distinction made clear.
+
+---
+
+# **AIMART Executive Summary**
+
+## Purpose
+
+AIMART is the enterprise platform for governing **AI models, classic machine learning models, and agentic systems**. It ensures that AI-Products are built, deployed, and audited with **full visibility, reproducibility, and security**, while handling **Client Information Data (CID)** under strict compliance rules.
+
+---
+
+## What AIMART Delivers
+
+* **Unified Governance** — All models, agents, and evidences live under **Databricks Unity Catalog + MLflow**, giving one system of record.
+* **Strong Isolation** — Each AI-Product has its own schema, UAMI, and role set (AAD groups). No cross-product leakage.
+* **Confidentiality by Design** — All models are secured, regardless of CID sensitivity. Access is controlled via both **zone rules** and **divisional splits**.
+* **Best-in-Class MLflow** — AIMART uses **Databricks MLflow**, rated **green** as a trusted enterprise service. In contrast, unmanaged open-source MLflow is **red** for risk and unreliability.
+
+---
+
+## Client Information Data (CID) Governance
+
+**CID is always highly sensitive.**
+The distinction between zones lies in **geographic mobility**:
+
+* **Green Zone CID** — Highly sensitive data, but **permitted to move across geographical locations** under regulated controls.
+* **Red Zone CID** — Equally sensitive, but **restricted to its jurisdiction**; it cannot be transferred across regions.
+
+In both zones:
+
+* **Divisional separation** applies — CID is always contained within its business division.
+* **Agents and models may not directly hold CID**, but their **evidence bundles always reference CID**.
+* These **evidences—not transient runs—must be validated and audited** to prove compliance.
+
+Examples:
+
+* **Client screening agents** — evidences must show that regulated checks were correctly executed.
+* **Onboarding/CV parsing agents** — evidences must prove lawful use and retention of client data.
+
+---
+
+## Why Evidence Matters in the Agentic World
+
+In today’s **agentic AI landscape**, many APIs and services are short-lived. They may vanish, change terms, or revoke access.
+
+* **Only evidences persist.** AIMART ensures that every run, parameter, lineage, and output is **captured and tamper-evident**.
+* These records guarantee **auditability years later**, independent of third-party APIs.
+* **Databricks is the green-rated trusted application** to anchor this persistence. Relying on unmanaged alternatives is a **red-rated risk**.
+
+---
+
+## Lifecycle Control
+
+AIMART standardizes the **AI-Ops lifecycle** end-to-end:
+
+1. **Prepare & Build** — Source code, data, and configs flow into GitLab CI/CD.
+2. **Train & Evaluate** — Governed compute executes runs; evidences are captured.
+3. **Register & Validate** — Only auditable, complete models enter MLflow Registry.
+4. **Promote & Deploy** — GitOps enforces that only registered artifacts reach production.
+5. **Operate & Audit** — Observability, CID-linked evidences, and tamper-proof logs guarantee compliance.
+
+This provides **full visibility and reproducibility** from data through to deployed models and agents.
+
+---
+
+## Cost & Scalability
+
+* Multiple AI-Products are **lightweight to operate**.
+* Evidence storage grows linearly, but remains small compared to training/serving costs.
+* The **compliance and risk reduction benefits** far outweigh marginal overhead.
+
+---
+
+## Business Value
+
+AIMART provides:
+
+* **Trust & Compliance** — All AI-Products are auditable and regulator-ready.
+* **Resilience** — Even if APIs disappear, evidences remain.
+* **Efficiency** — Standardized lifecycle reduces compliance burden.
+* **Future-safe operations** — Built on **Databricks MLflow (green-rated)**, the most reliable evidence platform today.
+
+**In short:** AIMART secures sensitive CID across geographies, ensures auditability, and enables AI at enterprise scale with confidence and accountability.
