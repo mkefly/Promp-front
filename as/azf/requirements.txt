@@ -1,0 +1,7 @@
+azure-functions
+azure-functions-durable
+azure-identity
+requests
+pydantic
+pytest
+requests-mock
